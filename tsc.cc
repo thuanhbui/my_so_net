@@ -102,7 +102,8 @@ int Client::connectTo()
     stub_ = std::unique_ptr<SNSService::Stub>(SNSService::NewStub(channel));
 
     IReply ire = Login();
-    return 1;
+    if (ire.grpc_status.ok() && ire.comm_status == SUCCESS) return 1;
+    return -1;
 }
 
 IReply Client::processCommand(std::string& input)
@@ -153,7 +154,7 @@ IReply Client::processCommand(std::string& input)
   // ------------------------------------------------------------
     
     IReply ire;
-    std::cout << "Receiving: " << input << std::endl;
+    //std::cout << "Receiving: " << input << std::endl;
     std::vector<std::string> tokens = split_string(input, " ");
 
     if (tokens.size() == 0) return ire;
@@ -166,6 +167,8 @@ IReply Client::processCommand(std::string& input)
     } else if (cmd == "UNFOLLOW") {
 	    std::string unfollow_username = tokens[1];
 	    return UnFollow(unfollow_username);
+    } else if (cmd == "LIST") {
+	    return List();
     }
 
     return ire;
@@ -181,10 +184,25 @@ void Client::processTimeline()
 IReply Client::List() {
 
     IReply ire;
+    ClientContext context;
+    Request request;
+    ListReply list_reply;
 
-    /*********
-    YOUR CODE HERE
-    **********/
+    request.set_username(username);
+    
+    Status status = stub_->List(&context, request, &list_reply);
+    ire.grpc_status = status;
+    if (status.ok()) {
+	    //std::cout<<"Server message: Followers: "<<list_reply.followers_size()<<std::endl;
+	    //std::cout<<"Server message: Users: "<<list_reply.all_users_size()<<std::endl;
+	    for (std::string follower : list_reply.followers()) {
+		    ire.followers.push_back(follower);
+	    }
+	    for (std::string user : list_reply.all_users()) {
+		    ire.all_users.push_back(user);
+	    }
+	    ire.comm_status = SUCCESS;
+    }
 
     return ire;
 }
@@ -203,12 +221,10 @@ IReply Client::Follow(const std::string& username2) {
     Status status = stub_->Follow(&context, request, &reply);
     ire.grpc_status = status;
     if (status.ok()) {
-	    std::cout<<"Server message: "<<reply.msg() <<std::endl;
-    	if (reply.msg() == "Invalid username: You cannot follow yourself!") {
+	    //std::cout<<"Server message: "<<reply.msg() <<std::endl;
+    	if (reply.msg() == "Invalid username: User not found.") {
 	    ire.comm_status = FAILURE_INVALID_USERNAME;
-    	} else if (reply.msg() == "Invalid username: User not found.") {
-	    ire.comm_status = FAILURE_NOT_EXISTS;
-    	} else if (reply.msg() == "You already followed this user!") {
+    	} else if (reply.msg() == "You already followed this user!" || reply.msg() == "Invalid username: You cannot follow yourself!") {
 	    ire.comm_status = FAILURE_ALREADY_EXISTS;
     	} else if (reply.msg() == "Follow successfully!") {
 	    ire.comm_status = SUCCESS;
@@ -235,11 +251,9 @@ IReply Client::UnFollow(const std::string& username2) {
     ire.grpc_status = status;
 
     if (status.ok()) {
-	    std::cout<<"Server message: " << reply.msg() <<std::endl;
-	    if (reply.msg() == "Invalid username: You cannot unfollow yourself!") {
+	    //std::cout<<"Server message: " << reply.msg() <<std::endl;
+	    if (reply.msg() == "Invalid username: You cannot unfollow yourself!" || reply.msg() == "Invalid username: User not found.") {
 		    ire.comm_status = FAILURE_INVALID_USERNAME;
-	    } else if (reply.msg() == "Invalid username: User not found.") {
-		    ire.comm_status = FAILURE_NOT_EXISTS;
 	    } else if (reply.msg() == "You are not a follower") {
 		    ire.comm_status = FAILURE_NOT_A_FOLLOWER;
 	    } else if (reply.msg() == "UnFollow sucessfully!") {
@@ -255,6 +269,7 @@ IReply Client::UnFollow(const std::string& username2) {
 // Login Command  
 IReply Client::Login() {
 
+    IReply ire;
     ClientContext context;
     Request request;
     Reply reply;
@@ -262,11 +277,14 @@ IReply Client::Login() {
     request.set_username(username);
 
     Status status = stub_->Login(&context, request, &reply);
-    IReply ire;
     ire.grpc_status = status;
-    ire.comm_status = SUCCESS;
+    if (status.ok()) {
+	    if (reply.msg() == "You are already logged in.")
+		    ire.comm_status = FAILURE_ALREADY_EXISTS;
+	    else 
+		    ire.comm_status = SUCCESS;
+    }
     std::cout<<reply.msg()<<std::endl;
-
     return ire;
 }
 

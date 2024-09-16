@@ -93,9 +93,21 @@ int lookup_user(std::string username) {
 class SNSServiceImpl final : public SNSService::Service {
   
   Status List(ServerContext* context, const Request* request, ListReply* list_reply) override {
-    /*********
-    YOUR CODE HERE
-    **********/
+
+    std::string username = request->username();
+    LOG(INFO) <<"User: " << username << " -> RPC: List";
+
+    Client* user = client_db[lookup_user(username)];
+    LOG(INFO)<<"Followers: " <<user->client_followers.size();
+    for (Client* c : user->client_followers) {
+	    list_reply->add_followers(c->username);
+    }
+
+    LOG(INFO)<<"Users: " <<client_db.size();
+    for (Client* c : client_db) {
+	    list_reply->add_all_users(c->username);
+    }
+
     return Status::OK;
   }
 
@@ -103,7 +115,7 @@ class SNSServiceImpl final : public SNSService::Service {
 
     std::string current_username = request->username();
     std::string follow_username = request->arguments(0);
-    LOG(INFO) <<"User: "<< current_username <<" -> RPC: Follow";
+    LOG(INFO) <<"User: "<< current_username <<" -> RPC: Follow | argument: " <<follow_username;
 
     if (current_username == follow_username) {
 	    LOG(INFO) <<"Invalid username: User cannot follow themselves.";
@@ -140,7 +152,7 @@ class SNSServiceImpl final : public SNSService::Service {
 
     std::string username1 = request->username();
     std::string username2 = request->arguments(0);
-    LOG(INFO) <<"User: " << username1 << " -> RPC: UnFollow";
+    LOG(INFO) <<"User: " << username1 << " -> RPC: UnFollow | argument: " << username2;
 
     if (username1 == username2) {
 	    LOG(INFO) <<"Invalid username: User cannot unfollow themselves.";
