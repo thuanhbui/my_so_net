@@ -7,6 +7,7 @@
 #include <csignal>
 #include <grpc++/grpc++.h>
 #include "client.h"
+#include <regex>
 
 #include "sns.grpc.pb.h"
 using grpc::Channel;
@@ -36,6 +37,18 @@ Message MakeMessage(const std::string& username, const std::string& msg) {
     return m;
 }
 
+std::vector<std::string> split_string(const std::string& input, const std::string& delimiter) {
+    std::vector<std::string> tokens;
+    std::regex re(delimiter);
+    std::sregex_token_iterator begin(input.begin(), input.end(), re, -1);
+    std::sregex_token_iterator end;
+
+    for (std::sregex_token_iterator i = begin; i != end; i++) {
+	tokens.push_back(i->str());
+    }
+
+    return tokens;
+}
 
 class Client : public IClient
 {
@@ -85,6 +98,10 @@ int Client::connectTo()
 // YOUR CODE HERE
 //////////////////////////////////////////////////////////
 
+    auto channel = grpc::CreateChannel("127.0.0.1:3010", grpc::InsecureChannelCredentials());
+    stub_ = std::unique_ptr<SNSService::Stub>(SNSService::NewStub(channel));
+
+    IReply ire = Login();
     return 1;
 }
 
@@ -134,12 +151,22 @@ IReply Client::processCommand(std::string& input)
   // For the command "LIST", you should set both "all_users" and 
   // "following_users" member variable of IReply.
   // ------------------------------------------------------------
-
-    IReply ire;
     
-    /*********
-    YOUR CODE HERE
-    **********/
+    IReply ire;
+    std::cout << "Receiving: " << input << std::endl;
+    std::vector<std::string> tokens = split_string(input, " ");
+
+    if (tokens.size() == 0) return ire;
+
+    std::string cmd = tokens[0];
+
+    if (cmd == "FOLLOW") {
+      std::string follow_username = tokens[1];
+      return Follow(follow_username);
+    } else if (cmd == "UNFOLLOW") {
+	    std::string unfollow_username = tokens[1];
+	    return UnFollow(unfollow_username);
+    }
 
     return ire;
 }
@@ -163,13 +190,32 @@ IReply Client::List() {
 }
 
 // Follow Command        
-IReply Client::Follow(const std::string& username2) {
+IReply Client::Follow(const std::string& username2) {    
+ 
+    IReply ire;
+    ClientContext context;
+    Request request;
+    Reply reply;
 
-    IReply ire; 
-      
-    /***
-    YOUR CODE HERE
-    ***/
+    request.set_username(username);
+    request.add_arguments(username2);
+
+    Status status = stub_->Follow(&context, request, &reply);
+    ire.grpc_status = status;
+    if (status.ok()) {
+	    std::cout<<"Server message: "<<reply.msg() <<std::endl;
+    	if (reply.msg() == "Invalid username: You cannot follow yourself!") {
+	    ire.comm_status = FAILURE_INVALID_USERNAME;
+    	} else if (reply.msg() == "Invalid username: User not found.") {
+	    ire.comm_status = FAILURE_NOT_EXISTS;
+    	} else if (reply.msg() == "You already followed this user!") {
+	    ire.comm_status = FAILURE_ALREADY_EXISTS;
+    	} else if (reply.msg() == "Follow successfully!") {
+	    ire.comm_status = SUCCESS;
+    	} else {
+	    ire.comm_status = FAILURE_UNKNOWN;
+	}
+    }
 
     return ire;
 }
@@ -178,10 +224,30 @@ IReply Client::Follow(const std::string& username2) {
 IReply Client::UnFollow(const std::string& username2) {
 
     IReply ire;
+    ClientContext context;
+    Request request;
+    Reply reply;
 
-    /***
-    YOUR CODE HERE
-    ***/
+    request.set_username(username);
+    request.add_arguments(username2);
+
+    Status status = stub_->UnFollow(&context, request, &reply);
+    ire.grpc_status = status;
+
+    if (status.ok()) {
+	    std::cout<<"Server message: " << reply.msg() <<std::endl;
+	    if (reply.msg() == "Invalid username: You cannot unfollow yourself!") {
+		    ire.comm_status = FAILURE_INVALID_USERNAME;
+	    } else if (reply.msg() == "Invalid username: User not found.") {
+		    ire.comm_status = FAILURE_NOT_EXISTS;
+	    } else if (reply.msg() == "You are not a follower") {
+		    ire.comm_status = FAILURE_NOT_A_FOLLOWER;
+	    } else if (reply.msg() == "UnFollow sucessfully!") {
+		    ire.comm_status = SUCCESS;
+	    } else {
+		    ire.comm_status = FAILURE_UNKNOWN;
+	    }
+    }
 
     return ire;
 }
@@ -189,11 +255,17 @@ IReply Client::UnFollow(const std::string& username2) {
 // Login Command  
 IReply Client::Login() {
 
+    ClientContext context;
+    Request request;
+    Reply reply;
+
+    request.set_username(username);
+
+    Status status = stub_->Login(&context, request, &reply);
     IReply ire;
-  
-    /***
-     YOUR CODE HERE
-    ***/
+    ire.grpc_status = status;
+    ire.comm_status = SUCCESS;
+    std::cout<<reply.msg()<<std::endl;
 
     return ire;
 }
@@ -231,7 +303,7 @@ void Client::Timeline(const std::string& username) {
 /////////////////////////////////////////////
 int main(int argc, char** argv) {
 
-  std::string hostname = "localhost";
+  std::string hostname = "127.0.0.1";
   std::string username = "default";
   std::string port = "3010";
     
@@ -249,7 +321,7 @@ int main(int argc, char** argv) {
     }
   }
       
-  std::cout << "Logging Initialized. Client starting...";
+  std::cout << "Logging Initialized. Client starting..."<<std::endl;
   
   Client myc(hostname, username, port);
   

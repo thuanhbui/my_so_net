@@ -81,6 +81,14 @@ struct Client {
 //Vector that stores every client that has been created
 std::vector<Client*> client_db;
 
+//search if an user is already registered in client_db
+int lookup_user(std::string username) {
+	for (int i = 0; i < client_db.size(); i++) {
+		if (client_db[i]->username == username)
+			return i;
+	}
+	return -1;
+}
 
 class SNSServiceImpl final : public SNSService::Service {
   
@@ -93,28 +101,108 @@ class SNSServiceImpl final : public SNSService::Service {
 
   Status Follow(ServerContext* context, const Request* request, Reply* reply) override {
 
-    /*********
-    YOUR CODE HERE
-    **********/
+    std::string current_username = request->username();
+    std::string follow_username = request->arguments(0);
+    LOG(INFO) <<"User: "<< current_username <<" -> RPC: Follow";
+
+    if (current_username == follow_username) {
+	    LOG(INFO) <<"Invalid username: User cannot follow themselves.";
+	    reply->set_msg("Invalid username: You cannot follow yourself!");
+	    return Status::OK;
+    }
+
+    int follow_user_index = lookup_user(follow_username);
+    if (follow_user_index < 0) {
+	    LOG(INFO) <<"Invalid username: user not found.";
+	    reply->set_msg("Invalid username: User not found.");
+	    return Status::OK;
+    }
+
+    Client* current_user = client_db[lookup_user(current_username)];
+    Client* follow_user = client_db[follow_user_index];
+
+    auto find = std::find(current_user->client_following.begin(), current_user->client_following.end(), follow_user);
+    if (find != current_user->client_following.end()) {
+	    LOG(INFO) <<"User already followed";
+	    reply->set_msg("You already followed this user!");
+	    return Status::OK;
+    } else {
+	    current_user->client_following.push_back(follow_user);
+	    follow_user->client_followers.push_back(current_user);
+	    LOG(INFO) <<"Follow successfully";
+	    reply->set_msg("Follow successfully!");
+	    return Status::OK;
+    }
+    	  
     return Status::OK; 
   }
-
   Status UnFollow(ServerContext* context, const Request* request, Reply* reply) override {
 
-    /*********
-    YOUR CODE HERE
-    **********/
+    std::string username1 = request->username();
+    std::string username2 = request->arguments(0);
+    LOG(INFO) <<"User: " << username1 << " -> RPC: UnFollow";
 
+    if (username1 == username2) {
+	    LOG(INFO) <<"Invalid username: User cannot unfollow themselves.";
+	    reply->set_msg("Invalid username: You cannot unfollow yourself!");
+	    return Status::OK;
+    }
+
+    int user2_index = lookup_user(username2);
+    if (user2_index < 0) {
+	    LOG(INFO) << "Invalid username: User not found.";
+	    reply->set_msg("Invalid username: User not found.");
+	    return Status::OK;
+    }
+
+    Client* user1 = client_db[lookup_user(username1)];
+    Client* user2 = client_db[user2_index];
+
+    auto find = std::find(user1->client_following.begin(), user1->client_following.end(), user2);
+    if (find != user1->client_following.end()) {
+	    user1->client_following.erase(
+			    std::remove(user1->client_following.begin(), user1->client_following.end(), user2), 
+			    user1->client_following.end());
+	    user2->client_followers.erase(
+			    std::remove(user2->client_followers.begin(), user2->client_followers.end(), user1),
+			    user2->client_followers.end());
+	    LOG(INFO) << "UnFollow successfully!";
+	    reply->set_msg("UnFollow sucessfully!");
+	    return Status::OK;
+    } else {
+	    LOG(INFO) << "User not a follower.";
+	    reply->set_msg("You are not a follower");
+	    return Status::OK;
+    }
     return Status::OK;
   }
 
   // RPC Login
   Status Login(ServerContext* context, const Request* request, Reply* reply) override {
 
-    /*********
-    YOUR CODE HERE
-    **********/
-    
+    std::string username = request->username();
+    LOG(INFO) <<"User: " <<username <<" -> RPC: Login";  
+
+    int user_index = lookup_user(username);
+    if (user_index >= 0) {
+	    Client* user = client_db[user_index];
+	    if (user->connected) {
+		    LOG(INFO)<<"User is already logged in";
+		    reply->set_msg("You are already logged in.");
+	    } else {
+		    LOG(INFO)<< "User login successfully";
+		    user->connected = true;
+		    reply->set_msg("Login successfully!");
+	    }
+    } else {
+	    LOG(INFO)<<"Username not found";
+	    Client* new_user = new Client();
+	    new_user->username = username;
+	    client_db.push_back(new_user);
+	    LOG(INFO)<<"Added new user! DB size: " << client_db.size();
+	    reply->set_msg("Welcome to Tiny SNS, " + username + "!");
+    }
+
     return Status::OK;
   }
 
@@ -130,15 +218,16 @@ class SNSServiceImpl final : public SNSService::Service {
 
 };
 
+
 void RunServer(std::string port_no) {
-  std::string server_address = "0.0.0.0:"+port_no;
+  std::string server_address = "127.0.0.1:"+port_no;
   SNSServiceImpl service;
 
   ServerBuilder builder;
   builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
   builder.RegisterService(&service);
   std::unique_ptr<Server> server(builder.BuildAndStart());
-  std::cout << "Server listening on " << server_address << std::endl;
+  //std::cout << "Server listening on" << server_address << std::endl;
   log(INFO, "Server listening on "+server_address);
 
   server->Wait();

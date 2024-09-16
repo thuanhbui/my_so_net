@@ -1,0 +1,21 @@
+# Compiled object files
+*.o
+*.obj
+
+# Executable files
+*.exe
+*.out
+*.app
+/tsc
+/tsd
+
+# IDE directories
+.idea/
+.vscode/
+
+# Proto files
+/sns.grpc.pb.cc
+/sns.grpc.pb.h
+/sns.pb.cc
+/sns.pb.h
+
