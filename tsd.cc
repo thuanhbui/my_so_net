@@ -221,10 +221,24 @@ class SNSServiceImpl final : public SNSService::Service {
   Status Timeline(ServerContext* context, 
 		ServerReaderWriter<Message, Message>* stream) override {
 
-    /*********
-    YOUR CODE HERE
-    **********/
-    
+    Message msg;
+    Client* user;
+    while (stream->Read(&msg)) {
+
+	    std::string username = msg.username();
+	    std::string message_content = msg.msg();
+
+	    LOG(INFO)<<"Username: " << username << " |Message: " << message_content;
+	    user = client_db[lookup_user(username)];
+	    user->stream = stream;
+	 
+	    for (Client* c : user->client_followers) {
+		if (c->connected) {
+			c->stream->Write(msg);
+		}
+	    }
+
+    }
     return Status::OK;
   }
 

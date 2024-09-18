@@ -169,6 +169,8 @@ IReply Client::processCommand(std::string& input)
 	    return UnFollow(unfollow_username);
     } else if (cmd == "LIST") {
 	    return List();
+    } else if (cmd == "TIMELINE") {
+	    return List();
     }
 
     return ire;
@@ -311,7 +313,34 @@ void Client::Timeline(const std::string& username) {
     /***
     YOUR CODE HERE
     ***/
+    ClientContext context;
+    
+    std::unique_ptr<grpc::ClientReaderWriter<Message,Message>> stream(stub_->Timeline(&context));
 
+    std::thread sender([&]() {
+		    std::string init = "Request Timeline";
+		    Message init_msg = MakeMessage(username, init);
+		    stream->Write(init_msg);
+		    while (true) {
+		    	std::string input = getPostMessage();
+		    	Message msg;
+		    	msg = MakeMessage(username, input);
+		    	stream->Write(msg);
+		    }
+		    stream->WritesDone();
+		});
+
+    std::thread receiver([&]() {
+		    Message msg;
+		    while (stream->Read(&msg)) {
+		    	google::protobuf::Timestamp timestamp = msg.timestamp();
+			std::time_t time = timestamp.seconds();
+			displayPostMessage(msg.username(), msg.msg(), time);
+			}
+		});
+
+    sender.join();
+    receiver.join();
 }
 
 
