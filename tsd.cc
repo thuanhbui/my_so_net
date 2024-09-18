@@ -227,15 +227,57 @@ class SNSServiceImpl final : public SNSService::Service {
 
 	    std::string username = msg.username();
 	    std::string message_content = msg.msg();
+	    std::string timestamp = google::protobuf::util::TimeUtil::ToString(msg.timestamp());
 
 	    LOG(INFO)<<"Username: " << username << " |Message: " << message_content;
 	    user = client_db[lookup_user(username)];
-	    user->stream = stream;
-	 
-	    for (Client* c : user->client_followers) {
-		if (c->connected) {
-			c->stream->Write(msg);
-		}
+	    if (!user->stream) user->stream = stream;
+
+	    std::string posts_filename = username + "_posts.txt";
+	    std::ofstream posts_file(posts_filename, std::ios::app | std::ios::out);
+
+	    if (message_content == "Request Timeline") {
+		    //Return last 20 messages
+		    std::string filename = username + "_timeline.txt";
+		    std::ifstream timeline(filename);
+		    if (timeline.is_open()) {
+			    if (user->following_file_size <= 20) {
+
+			    }
+
+		    }
+
+	    } else {
+		    //Append new post to user's local file
+		    if (!posts_file.is_open()) {
+			    LOG(ERROR) << "Failed to open file: " << posts_filename;
+		    } else {
+			    std::string file_entry = timestamp + " | " + message_content + "\n";
+			    posts_file << file_entry;
+			    posts_file.close();
+		    }
+
+		    //Process user's followers
+		    for (Client* c : user->client_followers) {
+			    //Publish new post to online followers
+			    if (c->connected) {
+				    c->stream->Write(msg);
+			    }
+			    //Append new post to all followers' timeline file
+			    std::string timeline_filename = c->username + "_timeline.txt";
+			    std::ofstream timeline_file(timeline_filename, std::ios::app | std::ios::out);
+
+			    if (!timeline_file.is_open()) {
+				    LOG(ERROR) << "Failed to open file: " << timeline_filename;
+			    } else {
+				    std::string timeline_entry = "T " + timestamp + "\n"
+					    			+ "U " + username + "\n"
+								+ "w " + message_content + "\n\n";
+				    timeline_file << timeline_entry;
+				    timeline_file.close();
+				    c->following_file_size++;
+			    }
+		    }
 	    }
 
     }
