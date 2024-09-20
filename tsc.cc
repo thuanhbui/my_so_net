@@ -81,9 +81,6 @@ private:
 };
 
 
-///////////////////////////////////////////////////////////
-//
-//////////////////////////////////////////////////////////
 int Client::connectTo()
 {
   // ------------------------------------------------------------
@@ -94,10 +91,6 @@ int Client::connectTo()
   // Please refer to gRpc tutorial how to create a stub.
   // ------------------------------------------------------------
     
-///////////////////////////////////////////////////////////
-// YOUR CODE HERE
-//////////////////////////////////////////////////////////
-
     auto channel = grpc::CreateChannel("127.0.0.1:3010", grpc::InsecureChannelCredentials());
     stub_ = std::unique_ptr<SNSService::Stub>(SNSService::NewStub(channel));
 
@@ -171,6 +164,8 @@ IReply Client::processCommand(std::string& input)
 	    return List();
     } else if (cmd == "TIMELINE") {
 	    return List();
+    } else {
+	    ire.comm_status = FAILURE_INVALID;
     }
 
     return ire;

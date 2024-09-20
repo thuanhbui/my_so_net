@@ -38,6 +38,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <stdlib.h>
@@ -223,29 +224,72 @@ class SNSServiceImpl final : public SNSService::Service {
 
     Message msg;
     Client* user;
+
+    //Save post files and timeline files to folder ~/files
+    std::string file_directory = "files";
+    if (!std::filesystem::exists(file_directory)) {
+	    std::filesystem::create_directory(file_directory);
+    }
+
     while (stream->Read(&msg)) {
 
+	    //parse the message
 	    std::string username = msg.username();
 	    std::string message_content = msg.msg();
 	    std::string timestamp = google::protobuf::util::TimeUtil::ToString(msg.timestamp());
 
+	    //lookup user who sends the message
 	    LOG(INFO)<<"Username: " << username << " |Message: " << message_content;
 	    user = client_db[lookup_user(username)];
 	    if (!user->stream) user->stream = stream;
 
-	    std::string posts_filename = username + "_posts.txt";
+	    std::string posts_filename = file_directory + "/" + username + "_posts.txt";
 	    std::ofstream posts_file(posts_filename, std::ios::app | std::ios::out);
 
 	    if (message_content == "Request Timeline") {
 		    //Return last 20 messages
-		    std::string filename = username + "_timeline.txt";
+		    std::string filename = file_directory + "/" + username + "_timeline.txt";
 		    std::ifstream timeline(filename);
+		    std::string line;
+		    std::vector<Message> messages;
+		    
+		    int nb_post = std::min(20, user->following_file_size);
+		    int nb_ignore = user->following_file_size - nb_post;
+		    int post_count = 0;
+
+		    Message msg;
+		    std::string msg_t;
+		    std::string msg_u;
+		    std::string msg_w;
+
 		    if (timeline.is_open()) {
-			    if (user->following_file_size <= 20) {
-
+			    //ignore first (total - 20) posts
+			    for (int i = 0; i < nb_ignore*4; i++) std::getline(timeline,line);
+			    while (std::getline(timeline, line)) {
+				    if (line[0] == 'T') msg_t = line.substr(2);
+				    else if (line[0] == 'U') msg_u = line.substr(2);
+				    else if (line[0] == 'W') msg_w = line.substr(2);
+				    else {
+ 					    msg.set_username(msg_u);
+					    msg.set_msg(msg_w);
+					    google::protobuf::Timestamp msg_timestamp;
+					    google::protobuf::util::TimeUtil::FromString(msg_t, &msg_timestamp);
+					    msg.mutable_timestamp()->CopyFrom(msg_timestamp);
+					    messages.push_back(msg);
+					    
+					    msg_t.clear(); 
+					    msg_u.clear();
+					    msg_w.clear();				    
+				    } 
 			    }
-
+			    for (int i = messages.size() - 1; i >= 0; i--) {
+				    stream->Write(messages[i]);
+			    }
+		    } else {
+			    LOG(ERROR)<<"Failed to open file: " <<filename;
 		    }
+
+		    timeline.close();
 
 	    } else {
 		    //Append new post to user's local file
@@ -260,19 +304,18 @@ class SNSServiceImpl final : public SNSService::Service {
 		    //Process user's followers
 		    for (Client* c : user->client_followers) {
 			    //Publish new post to online followers
-			    if (c->connected) {
+			    if (c->connected && c->stream) {
 				    c->stream->Write(msg);
 			    }
 			    //Append new post to all followers' timeline file
-			    std::string timeline_filename = c->username + "_timeline.txt";
+			    std::string timeline_filename = file_directory + "/" + c->username + "_timeline.txt";
 			    std::ofstream timeline_file(timeline_filename, std::ios::app | std::ios::out);
-
 			    if (!timeline_file.is_open()) {
 				    LOG(ERROR) << "Failed to open file: " << timeline_filename;
 			    } else {
 				    std::string timeline_entry = "T " + timestamp + "\n"
 					    			+ "U " + username + "\n"
-								+ "w " + message_content + "\n\n";
+								+ "W " + message_content + "\n";
 				    timeline_file << timeline_entry;
 				    timeline_file.close();
 				    c->following_file_size++;
@@ -281,6 +324,7 @@ class SNSServiceImpl final : public SNSService::Service {
 	    }
 
     }
+    user->connected = false;
     return Status::OK;
   }
 
