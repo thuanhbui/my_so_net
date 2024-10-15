@@ -10,6 +10,7 @@
 #include <regex>
 
 #include "sns.grpc.pb.h"
+#include "coordinator.grpc.pb.h"
 using grpc::Channel;
 using grpc::ClientContext;
 using grpc::ClientReader;
@@ -21,6 +22,10 @@ using csce662::ListReply;
 using csce662::Request;
 using csce662::Reply;
 using csce662::SNSService;
+using csce662::CoordService;
+using csce662::ServerInfo;
+using csce662::ID;
+
 
 void sig_ignore(int sig) {
   std::cout << "Signal caught " + sig;
@@ -53,10 +58,10 @@ std::vector<std::string> split_string(const std::string& input, const std::strin
 class Client : public IClient
 {
 public:
-  Client(const std::string& hname,
+  Client(const std::string& cip,
 	 const std::string& uname,
-	 const std::string& p)
-    :hostname(hname), username(uname), port(p) {}
+	 const std::string& cport)
+    :coord_ip(cip), username(uname), coord_port(cport) {}
 
   
 protected:
@@ -68,6 +73,8 @@ private:
   std::string hostname;
   std::string username;
   std::string port;
+  std::string coord_ip;
+  std::string coord_port;
   
   // You can have an instance of the client stub
   // as a member variable.
@@ -91,8 +98,25 @@ int Client::connectTo()
   // Please refer to gRpc tutorial how to create a stub.
   // ------------------------------------------------------------
     
-    auto channel = grpc::CreateChannel("127.0.0.1:3010", grpc::InsecureChannelCredentials());
-    stub_ = std::unique_ptr<SNSService::Stub>(SNSService::NewStub(channel));
+    std::string coord_address = coord_ip + ":" + coord_port;
+    auto channel = grpc::CreateChannel(coord_address, grpc::InsecureChannelCredentials());
+    std::unique_ptr<CoordService::Stub> coordStub_(CoordService::NewStub(channel));
+    
+    ClientContext context;
+    ServerInfo serverinfo;
+    ID id;
+    id.set_id(std::atoi(username.c_str()));
+
+    Status status = coordStub_->GetServer(&context, id, &serverinfo);
+    if (!status.ok()) {
+	    return -1;
+    }
+
+    hostname = serverinfo.hostname();
+    port = serverinfo.port();
+    std::string server_address = hostname + ":" + port;
+    auto server_channel = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
+    stub_ = std::unique_ptr<SNSService::Stub>(SNSService::NewStub(server_channel));
 
     IReply ire = Login();
     if (ire.grpc_status.ok() && ire.comm_status == SUCCESS) return 1;
@@ -346,17 +370,17 @@ void Client::Timeline(const std::string& username) {
 int main(int argc, char** argv) {
 
   std::string hostname = "127.0.0.1";
-  std::string username = "default";
+  std::string username = "1";
   std::string port = "3010";
     
   int opt = 0;
-  while ((opt = getopt(argc, argv, "h:u:p:")) != -1){
+  while ((opt = getopt(argc, argv, "h:k:u:")) != -1){
     switch(opt) {
     case 'h':
       hostname = optarg;break;
     case 'u':
       username = optarg;break;
-    case 'p':
+    case 'k':
       port = optarg;break;
     default:
       std::cout << "Invalid Command Line Argument\n";

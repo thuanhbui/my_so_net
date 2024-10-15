@@ -42,6 +42,7 @@
 #include <memory>
 #include <string>
 #include <stdlib.h>
+#include <thread>
 #include <unistd.h>
 #include <google/protobuf/util/time_util.h>
 #include <grpc++/grpc++.h>
@@ -49,6 +50,7 @@
 #define log(severity, msg) LOG(severity) << msg; google::FlushLogFiles(google::severity); 
 
 #include "sns.grpc.pb.h"
+#include "coordinator.grpc.pb.h"
 
 
 using google::protobuf::Timestamp;
@@ -60,11 +62,15 @@ using grpc::ServerReader;
 using grpc::ServerReaderWriter;
 using grpc::ServerWriter;
 using grpc::Status;
+using grpc::ClientContext;
 using csce662::Message;
 using csce662::ListReply;
 using csce662::Request;
 using csce662::Reply;
 using csce662::SNSService;
+using csce662::CoordService;
+using csce662::ServerInfo;
+using csce662::Confirmation;
 
 
 struct Client {
@@ -345,24 +351,115 @@ void RunServer(std::string port_no) {
   server->Wait();
 }
 
+class ServerProvider {
+  public: 
+     ServerProvider(const std::string c_id, const std::string s_id, const std::string hname, const std::string p, 
+		     const std::string cdnt_ip, const std::string cdnt_port):
+	     cluster_id(c_id), server_id(s_id), hostname(hname), port(p), coord_ip(cdnt_ip), coord_port(cdnt_port) {}
+     ~ServerProvider() {
+	     hb_thread.join();
+     }
+  void run() {
+	  setUpWithCoordinator();
+	  RunServer();
+  }
+  private:
+     std::string cluster_id;
+     std::string server_id;
+     std::string hostname;
+     std::string port;
+     std::string coord_ip;
+     std::string coord_port;
+
+     std::unique_ptr<CoordService::Stub> stub_;
+     ServerInfo serverinfo;
+     std::thread hb_thread;
+
+     int setUpWithCoordinator();
+     void RunServer();
+     void sendHeartBeat();
+};
+
+int ServerProvider::setUpWithCoordinator() {
+     std::string coord_address = coord_ip + ":" + coord_port;
+     auto channel = grpc::CreateChannel(coord_address, grpc::InsecureChannelCredentials());
+     stub_ = std::unique_ptr<CoordService::Stub>(CoordService::NewStub(channel));
+     serverinfo.set_serverid(std::stoi(server_id));
+     serverinfo.set_hostname(hostname);
+     serverinfo.set_port(port);
+     serverinfo.set_type("Server");
+     serverinfo.set_clusterid(std::stoi(cluster_id));
+
+     hb_thread = std::thread(&ServerProvider::sendHeartBeat, this);
+     return 0;
+}
+
+void ServerProvider::sendHeartBeat() {
+     while (true) {
+     	ClientContext context;
+     	Confirmation confirmation;
+     	Status status = stub_->Heartbeat(&context, serverinfo, &confirmation);
+     	if (!status.ok() || !confirmation.status()) {
+		LOG(ERROR) << "Cannot get confirmaton from Coordinator!";
+		exit(-1);
+     	}
+     	LOG(INFO) <<"Got confirmation from Coordinator";
+	std::this_thread::sleep_for(std::chrono::seconds(1));
+     }	     
+}
+
+void ServerProvider::RunServer() {
+	std::string server_address = hostname + ":" + port;
+  	SNSServiceImpl service;
+
+  	ServerBuilder builder;
+  	builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+  	builder.RegisterService(&service);
+  	std::unique_ptr<Server> server(builder.BuildAndStart());
+  	//std::cout << "Server listening on" << server_address << std::endl;
+  	log(INFO, "Server listening on "+server_address);
+
+  	server->Wait();
+}
+
 int main(int argc, char** argv) {
 
-  std::string port = "3010";
+  std::string coord_ip = "127.0.0.1";
+  std::string coord_port = "3010";
+  std::string cluster_id = "1";
+  std::string server_id = "1";
+  std::string port = "10000";
+  std::string hostname = "localhost";
   
   int opt = 0;
-  while ((opt = getopt(argc, argv, "p:")) != -1){
+  while ((opt = getopt(argc, argv, "c:s:h:k:p:")) != -1) {
     switch(opt) {
+      case 'c':
+  	  cluster_id = optarg;
+	  break;
+      case 's':
+	  server_id = optarg;
+	  break;
+      case 'h':
+          coord_ip = optarg;
+	  break;
+      case 'k':
+	  coord_port = optarg;
+	  break;	  
       case 'p':
-          port = optarg;break;
+          port = optarg;
+	  break;
       default:
 	  std::cerr << "Invalid Command Line Argument\n";
     }
   }
+
+  ServerProvider server(cluster_id, server_id, hostname, port, coord_ip, coord_port);
+  server.run();
   
   std::string log_file_name = std::string("server-") + port;
   google::InitGoogleLogging(log_file_name.c_str());
   log(INFO, "Logging Initialized. Server starting...");
-  RunServer(port);
 
   return 0;
 }
