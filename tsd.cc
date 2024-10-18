@@ -243,14 +243,16 @@ class SNSServiceImpl final : public SNSService::Service {
 	    std::string username = msg.username();
 	    std::string message_content = msg.msg();
 	    std::string timestamp = google::protobuf::util::TimeUtil::ToString(msg.timestamp());
+	    timestamp[timestamp.find('T')] = ' '; // remove T
+	    timestamp.pop_back(); // remove Z
 
 	    //lookup user who sends the message
 	    LOG(INFO)<<"Username: " << username << " |Message: " << message_content;
 	    user = client_db[lookup_user(username)];
 	    if (!user->stream) user->stream = stream;
 
-	    std::string posts_filename = file_directory + "/" + username + "_posts.txt";
-	    std::ofstream posts_file(posts_filename, std::ios::app | std::ios::out);
+	    std::string user_timeline_filename = file_directory + "/" + username + "_timeline.txt";
+	    std::ofstream user_timeline_file(user_timeline_filename, std::ios::app | std::ios::out);
 
 	    if (message_content == "Request Timeline") {
 		    //Return last 20 messages
@@ -273,7 +275,7 @@ class SNSServiceImpl final : public SNSService::Service {
 			    for (int i = 0; i < nb_ignore*4; i++) std::getline(timeline,line);
 			    while (std::getline(timeline, line)) {
 				    if (line[0] == 'T') msg_t = line.substr(2);
-				    else if (line[0] == 'U') msg_u = line.substr(2);
+				    else if (line[0] == 'U') msg_u = line.substr(21);
 				    else if (line[0] == 'W') msg_w = line.substr(2);
 				    else {
  					    msg.set_username(msg_u);
@@ -298,30 +300,33 @@ class SNSServiceImpl final : public SNSService::Service {
 		    timeline.close();
 
 	    } else {
+
+                    std::string timeline_entry = "T " + timestamp + "\n"
+			    			+ "U http://twitter.com/" + username + "\n"
+						+ "W " + message_content + "\n";
+ 
 		    //Append new post to user's local file
-		    if (!posts_file.is_open()) {
-			    LOG(ERROR) << "Failed to open file: " << posts_filename;
+		    if (!user_timeline_file.is_open()) {
+			    LOG(ERROR) << "Failed to open file: " << user_timeline_filename;
 		    } else {
-			    std::string file_entry = timestamp + " | " + message_content + "\n";
-			    posts_file << file_entry;
-			    posts_file.close();
+			    user_timeline_file << timeline_entry;
+			    user_timeline_file.close();
 		    }
 
+		    
 		    //Process user's followers
 		    for (Client* c : user->client_followers) {
 			    //Publish new post to online followers
 			    if (c->connected && c->stream) {
 				    c->stream->Write(msg);
 			    }
+
 			    //Append new post to all followers' timeline file
 			    std::string timeline_filename = file_directory + "/" + c->username + "_timeline.txt";
 			    std::ofstream timeline_file(timeline_filename, std::ios::app | std::ios::out);
 			    if (!timeline_file.is_open()) {
 				    LOG(ERROR) << "Failed to open file: " << timeline_filename;
 			    } else {
-				    std::string timeline_entry = "T " + timestamp + "\n"
-					    			+ "U " + username + "\n"
-								+ "W " + message_content + "\n";
 				    timeline_file << timeline_entry;
 				    timeline_file.close();
 				    c->following_file_size++;
@@ -331,6 +336,7 @@ class SNSServiceImpl final : public SNSService::Service {
 
     }
     user->connected = false;
+    user->stream = 0;
     return Status::OK;
   }
 
