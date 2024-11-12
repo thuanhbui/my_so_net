@@ -8,16 +8,18 @@
 *.app
 /tsc
 /tsd
+/coordinator
+/synchronizer
 
 # IDE directories
 .idea/
 .vscode/
 
 # Proto files
-/sns.grpc.pb.cc
-/sns.grpc.pb.h
-/sns.pb.cc
-/sns.pb.h
+/*.grpc.pb.cc
+/*.grpc.pb.h
+/*.pb.cc
+/*.pb.h
 
 # Storage files
 files/

@@ -103,6 +103,7 @@ class CoordServiceImpl final : public CoordService::Service {
 	if (server_index >= 0) {
 		zNode* server = clusters[cluster_index][server_index];
 		server->last_heartbeat = getTimeNow();
+		confirmation->set_type(serverinfo->type());
 	} else {
 		LOG(INFO) <<"Adding new server to Cluster " << serverinfo->clusterid() 
 			<< ": "<<serverinfo->hostname()
@@ -112,7 +113,13 @@ class CoordServiceImpl final : public CoordService::Service {
 		server->serverID = server_id;
 		server->hostname = serverinfo->hostname();
 		server->port = serverinfo->port();
-		server->type = serverinfo->type();
+		if (clusters[cluster_index].size() == 0) {
+			server->type = "master";
+			confirmation->set_type("master");
+		} else {
+			server->type = "slave";
+			confirmation->set_type("slave");
+		}
 		server->last_heartbeat = getTimeNow();
 		clusters[cluster_index].push_back(server);
 	}
@@ -127,14 +134,14 @@ class CoordServiceImpl final : public CoordService::Service {
     //hardcoded to represent this.
     Status GetServer(ServerContext* context, const ID* id, ServerInfo* serverinfo) override {
         // Your code here
-	LOG(INFO) << "Get Server for Client ID: "<< id->id();
 	int client_id = id->id();
+	log(INFO, "Get Server for Client ID: " + std::to_string(client_id));
 	int cluster_id = ((client_id - 1) % 3) + 1;
 	LOG(INFO) << "Cluster ID: " << cluster_id;
 	if (cluster_id > 3) return grpc::Status(grpc::StatusCode::NOT_FOUND, "Cluster ID not found");
 
 	for (zNode* s : clusters[cluster_id - 1]) {
-	    if (s->isActive()) {
+	    if (s->isActive() && s->type == "master") {
 		serverinfo->set_serverid(s->serverID);
 		serverinfo->set_hostname(s->hostname);
 		serverinfo->set_port(s->port);
@@ -145,6 +152,27 @@ class CoordServiceImpl final : public CoordService::Service {
 	}
 	
         return grpc::Status(grpc::StatusCode::UNAVAILABLE, "Server is not available now");
+    }
+
+    Status GetSlave(ServerContext* context, const ID* id, ServerInfo* serverinfo) override {
+	    int client_id = id->id();
+	    log(INFO, "Get Slave for Client ID: " + std::to_string(client_id));
+	    int cluster_id = ((client_id - 1) % 3) + 1;
+	    log(INFO, "Cluster ID: " + std::to_string(cluster_id));
+	    if (cluster_id > 3) return grpc::Status(grpc::StatusCode::NOT_FOUND, "Cluster ID not found");
+
+	    for (zNode* s : clusters[cluster_id - 1]) {
+		    if (s->isActive() && s->type == "slave") {
+			    serverinfo->set_serverid(s->serverID);
+			    serverinfo->set_hostname(s->hostname);
+			    serverinfo->set_port(s->port);
+			    serverinfo->set_type(s->type);
+			    serverinfo->set_clusterid(cluster_id);
+			    return Status::OK;
+		    }
+	    }
+	    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "No Slave found in the cluster now");
+
     }
 
 
@@ -217,7 +245,7 @@ void checkHeartbeat(){
 
         v_mutex.unlock();
 
-        sleep(3);
+        sleep(10);
     }
 }
 

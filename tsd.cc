@@ -87,6 +87,7 @@ struct Client {
 
 //Vector that stores every client that has been created
 std::vector<Client*> client_db;
+ServerInfo serverinfo;
 
 //search if an user is already registered in client_db
 int lookup_user(std::string username) {
@@ -232,7 +233,7 @@ class SNSServiceImpl final : public SNSService::Service {
     Client* user;
 
     //Save post files and timeline files to folder ~/files
-    std::string file_directory = "files";
+    std::string file_directory = "files/cluster_" + std::to_string(serverinfo.clusterid()) + "/" + serverinfo.type();
     if (!std::filesystem::exists(file_directory)) {
 	    std::filesystem::create_directory(file_directory);
     }
@@ -343,20 +344,6 @@ class SNSServiceImpl final : public SNSService::Service {
 };
 
 
-void RunServer(std::string port_no) {
-  std::string server_address = "127.0.0.1:"+port_no;
-  SNSServiceImpl service;
-
-  ServerBuilder builder;
-  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
-  builder.RegisterService(&service);
-  std::unique_ptr<Server> server(builder.BuildAndStart());
-  //std::cout << "Server listening on" << server_address << std::endl;
-  log(INFO, "Server listening on "+server_address);
-
-  server->Wait();
-}
-
 class ServerProvider {
   public: 
      ServerProvider(const std::string c_id, const std::string s_id, const std::string hname, const std::string p, 
@@ -378,7 +365,6 @@ class ServerProvider {
      std::string coord_port;
 
      std::unique_ptr<CoordService::Stub> stub_;
-     ServerInfo serverinfo;
      std::thread hb_thread;
 
      int setUpWithCoordinator();
@@ -393,7 +379,7 @@ int ServerProvider::setUpWithCoordinator() {
      serverinfo.set_serverid(std::stoi(server_id));
      serverinfo.set_hostname(hostname);
      serverinfo.set_port(port);
-     serverinfo.set_type("Server");
+     serverinfo.set_type("new");
      serverinfo.set_clusterid(std::stoi(cluster_id));
 
      hb_thread = std::thread(&ServerProvider::sendHeartBeat, this);
@@ -410,7 +396,13 @@ void ServerProvider::sendHeartBeat() {
 		exit(-1);
      	}
      	LOG(INFO) <<"Got confirmation from Coordinator";
-	std::this_thread::sleep_for(std::chrono::seconds(1));
+	if (serverinfo.type() == "new") {
+		serverinfo.set_type(confirmation.type());
+	}
+	if (serverinfo.type() == "slave" && confirmation.type() == "master") {
+		//TODO transfer Master rights to Slave
+	}
+	std::this_thread::sleep_for(std::chrono::seconds(10));
      }	     
 }
 
