@@ -108,13 +108,12 @@ int Client::connectTo()
     id.set_id(std::atoi(username.c_str()));
 
     Status status = coordStub_->GetServer(&context, id, &serverinfo);
-    if (!status.ok()) {
-	    return -1;
-    }
+    if (!status.ok()) return -1;
 
     hostname = serverinfo.hostname();
     port = serverinfo.port();
     std::string server_address = hostname + ":" + port;
+
     auto server_channel = grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
     stub_ = std::unique_ptr<SNSService::Stub>(SNSService::NewStub(server_channel));
 

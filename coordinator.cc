@@ -103,7 +103,19 @@ class CoordServiceImpl final : public CoordService::Service {
 	if (server_index >= 0) {
 		zNode* server = clusters[cluster_index][server_index];
 		server->last_heartbeat = getTimeNow();
-		confirmation->set_type(serverinfo->type());
+		/*
+		if (clusters[cluster_index][0]->type == "dead") {
+			log(INFO, "Switch Slave to Master");
+			confirmation->set_type("master");
+			server->type = "master";
+		} else confirmation->set_type(serverinfo->type());
+		*/
+		if (server->type == "slave" && server_index == 0) {
+			log(INFO, "Change Slave type to Master");
+			confirmation->set_type("master");
+			server->type = "master";
+		}
+		else confirmation->set_type(serverinfo->type());
 	} else {
 		LOG(INFO) <<"Adding new server to Cluster " << serverinfo->clusterid() 
 			<< ": "<<serverinfo->hostname()
@@ -236,7 +248,14 @@ void checkHeartbeat(){
                     if(!s->missed_heartbeat){
                         s->missed_heartbeat = true;
                         //s->last_heartbeat = getTimeNow();
-                    }
+                    } else {
+			//missed last hearbeat, and miss this hearbeat: master die
+			if (s->type == "master") {
+				//log(INFO, "Master DEAD: " + s->hostname + ":" + s->port);
+				//s->type == "dead";
+				c.erase(find(c.begin(), c.end(), s));
+			}
+		    }
                 } else {
 			s->missed_heartbeat = false;
 		}

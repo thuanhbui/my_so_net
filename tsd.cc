@@ -88,6 +88,7 @@ struct Client {
 //Vector that stores every client that has been created
 std::vector<Client*> client_db;
 ServerInfo serverinfo;
+ServerInfo slave;
 
 //search if an user is already registered in client_db
 int lookup_user(std::string username) {
@@ -235,7 +236,7 @@ class SNSServiceImpl final : public SNSService::Service {
     //Save post files and timeline files to folder ~/files
     std::string file_directory = "files/cluster_" + std::to_string(serverinfo.clusterid()) + "/" + serverinfo.type();
     if (!std::filesystem::exists(file_directory)) {
-	    std::filesystem::create_directory(file_directory);
+	    std::filesystem::create_directories(file_directory);
     }
 
     while (stream->Read(&msg)) {
@@ -401,6 +402,8 @@ void ServerProvider::sendHeartBeat() {
 	}
 	if (serverinfo.type() == "slave" && confirmation.type() == "master") {
 		//TODO transfer Master rights to Slave
+		log(INFO, "Change type to Master");
+		serverinfo.set_type(confirmation.type());
 	}
 	std::this_thread::sleep_for(std::chrono::seconds(10));
      }	     
