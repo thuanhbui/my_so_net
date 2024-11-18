@@ -71,7 +71,7 @@ using csce662::SNSService;
 using csce662::CoordService;
 using csce662::ServerInfo;
 using csce662::Confirmation;
-
+using csce662::ID;
 
 struct Client {
   std::string username;
@@ -87,8 +87,10 @@ struct Client {
 
 //Vector that stores every client that has been created
 std::vector<Client*> client_db;
+std::string base_directory;
 ServerInfo serverinfo;
-ServerInfo slave;
+std::unique_ptr<SNSService::Stub> slave_stub_;
+std::unique_ptr<CoordService::Stub> stub_;
 
 //search if an user is already registered in client_db
 int lookup_user(std::string username) {
@@ -97,6 +99,27 @@ int lookup_user(std::string username) {
 			return i;
 	}
 	return -1;
+}
+
+void getSlave() {
+	ClientContext context;
+	ServerInfo slave;
+    	ID id;
+    	id.set_id(serverinfo.clusterid());
+    	Status status = stub_->GetSlave(&context, id, &slave);
+    	if (!status.ok()) {
+	     log(INFO, "GRPC failed when getting Slave");
+	     slave_stub_ = nullptr;
+    	} else {
+		log(INFO, "Successfully get Slave. Configuring Slave Stub ...");
+		std::string hostname = slave.hostname();
+		std::string port = slave.port();
+    		std::string slave_address = hostname + ":" + port;
+
+		auto slave_channel = grpc::CreateChannel(slave_address, grpc::InsecureChannelCredentials());
+    		slave_stub_ = std::unique_ptr<SNSService::Stub>(SNSService::NewStub(slave_channel));
+		log(INFO, "Finish configuring Slave Stub");
+	}
 }
 
 class SNSServiceImpl final : public SNSService::Service {
@@ -150,6 +173,30 @@ class SNSServiceImpl final : public SNSService::Service {
     } else {
 	    current_user->client_following.push_back(follow_user);
 	    follow_user->client_followers.push_back(current_user);
+
+	    std::string following_filename = base_directory + "/" + serverinfo.type() + "/" + current_username + "_following.txt";
+	    std::ofstream following_file(following_filename, std::ios::app | std::ios::out);
+	    if (following_file.is_open()) {
+		    std::string following_entry = follow_username + "\n";
+		    following_file << following_entry;
+		    following_file.close();
+	    } else {
+		    log(ERROR, "Failed to open Following file");
+	    }
+
+	    bool same_cluster = (std::atoi(current_username.c_str()) % 3) == (std::stoi(follow_username.c_str()) % 3);
+	    if (same_cluster) {
+                    std::string followers_filename = base_directory + "/" + serverinfo.type() + "/" + follow_username + "_followers.txt";
+		    std::ofstream followers_file(followers_filename, std::ios::app | std::ios::out);
+		    if (followers_file.is_open()) {
+			    std::string followers_entry = current_username + "\n";
+			    followers_file << followers_entry;
+			    followers_file.close();
+		    } else {
+			    log(ERROR, "Failed to open Followers file");
+		    }
+	    }
+
 	    LOG(INFO) <<"Follow successfully";
 	    reply->set_msg("Follow successfully!");
 	    return Status::OK;
@@ -201,9 +248,20 @@ class SNSServiceImpl final : public SNSService::Service {
   // RPC Login
   Status Login(ServerContext* context, const Request* request, Reply* reply) override {
 
+    if (serverinfo.type() == "1") {
+	    getSlave();
+	    if (slave_stub_ != nullptr) {
+		ClientContext slaveContext;
+	    	Request slaveRequest;
+	    	Reply slaveReply;
+		slaveRequest.set_username(request->username());
+	    	Status status = slave_stub_->Login(&slaveContext, slaveRequest, &slaveReply);
+	    }
+    }
+  
     std::string username = request->username();
-    LOG(INFO) <<"User: " <<username <<" -> RPC: Login";  
-
+    LOG(INFO) <<"User: " <<username <<" -> RPC: Login";
+    
     int user_index = lookup_user(username);
     if (user_index >= 0) {
 	    Client* user = client_db[user_index];
@@ -217,10 +275,25 @@ class SNSServiceImpl final : public SNSService::Service {
 	    }
     } else {
 	    LOG(INFO)<<"Username not found";
+
 	    Client* new_user = new Client();
 	    new_user->username = username;
 	    client_db.push_back(new_user);
+
+	    std::string file_directory = base_directory + "/" + serverinfo.type();
+	    if (!std::filesystem::exists(file_directory)) {
+		    std::filesystem::create_directories(file_directory);
+	    }
+	    std::string all_users_filename = file_directory + "/" + "all_users.txt";
+	    std::ofstream all_users_file(all_users_filename, std::ios::app | std::ios::out);
+	    if (all_users_file.is_open()) {
+		    std::string user_entry = username + "\n";
+		    all_users_file << user_entry;
+		    all_users_file.close();
+	    }
+
 	    LOG(INFO)<<"Added new user! DB size: " << client_db.size();
+
 	    reply->set_msg("Welcome to Tiny SNS, " + username + "!");
     }
 
@@ -234,7 +307,7 @@ class SNSServiceImpl final : public SNSService::Service {
     Client* user;
 
     //Save post files and timeline files to folder ~/files
-    std::string file_directory = "files/cluster_" + std::to_string(serverinfo.clusterid()) + "/" + serverinfo.type();
+    std::string file_directory = base_directory + "/" + serverinfo.type();
     if (!std::filesystem::exists(file_directory)) {
 	    std::filesystem::create_directories(file_directory);
     }
@@ -365,7 +438,6 @@ class ServerProvider {
      std::string coord_ip;
      std::string coord_port;
 
-     std::unique_ptr<CoordService::Stub> stub_;
      std::thread hb_thread;
 
      int setUpWithCoordinator();
@@ -374,16 +446,25 @@ class ServerProvider {
 };
 
 int ServerProvider::setUpWithCoordinator() {
+
      std::string coord_address = coord_ip + ":" + coord_port;
      auto channel = grpc::CreateChannel(coord_address, grpc::InsecureChannelCredentials());
      stub_ = std::unique_ptr<CoordService::Stub>(CoordService::NewStub(channel));
+     
      serverinfo.set_serverid(std::stoi(server_id));
      serverinfo.set_hostname(hostname);
      serverinfo.set_port(port);
      serverinfo.set_type("new");
      serverinfo.set_clusterid(std::stoi(cluster_id));
-
+     
      hb_thread = std::thread(&ServerProvider::sendHeartBeat, this);
+
+     //Set up files folder
+     base_directory = "files/cluster_" + std::to_string(serverinfo.clusterid());
+     if (!std::filesystem::exists(base_directory)) {
+	    std::filesystem::create_directories(base_directory);
+     }
+
      return 0;
 }
 
@@ -400,7 +481,7 @@ void ServerProvider::sendHeartBeat() {
 	if (serverinfo.type() == "new") {
 		serverinfo.set_type(confirmation.type());
 	}
-	if (serverinfo.type() == "slave" && confirmation.type() == "master") {
+	if (serverinfo.type() == "2" && confirmation.type() == "1") {
 		//TODO transfer Master rights to Slave
 		log(INFO, "Change type to Master");
 		serverinfo.set_type(confirmation.type());

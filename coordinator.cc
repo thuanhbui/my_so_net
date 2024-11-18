@@ -86,6 +86,14 @@ int lookup_server(int serverID, std::vector<zNode*> cluster) {
     return -1;
 }
 
+int lookup_synchronizer(int synchID, std::vector<zNode*> cluster) {
+	for (int i = 0; i < cluster.size(); i++) {
+		if (cluster[i]->serverID == synchID && cluster[i]->type == "synchronizer") {
+			return i;
+		}
+	}
+	return -1;
+}
 
 class CoordServiceImpl final : public CoordService::Service {
 
@@ -99,6 +107,29 @@ class CoordServiceImpl final : public CoordService::Service {
 		return grpc::Status(grpc::StatusCode::NOT_FOUND, "Cluster ID not found.");
 	}
 	int server_index = lookup_server(server_id, clusters[cluster_index]);
+	if (serverinfo->type() == "synchronizer") {
+		server_index = lookup_synchronizer(server_id, clusters[cluster_index]);
+		if (server_index >= 0) {
+			zNode* synchronizer = clusters[cluster_index][server_index];
+			synchronizer->last_heartbeat = getTimeNow();
+		} else {
+			log(INFO, "Adding new synchronizer to Cluster " + std::to_string(serverinfo->clusterid()));
+			zNode* synchronizer = new zNode();
+			synchronizer->serverID = server_id;
+			synchronizer->hostname = serverinfo->hostname();
+			synchronizer->port = serverinfo->port();
+			synchronizer->type = "synchronizer";
+			synchronizer->last_heartbeat = getTimeNow();
+			clusters[cluster_index].push_back(synchronizer);	
+		}
+		if (server_id == serverinfo->clusterid()) {
+				confirmation->set_type("1");
+			} else {
+				confirmation->set_type("2");
+			}
+		confirmation->set_status(true);
+		return Status::OK;
+	}
 
 	if (server_index >= 0) {
 		zNode* server = clusters[cluster_index][server_index];
@@ -106,14 +137,14 @@ class CoordServiceImpl final : public CoordService::Service {
 		/*
 		if (clusters[cluster_index][0]->type == "dead") {
 			log(INFO, "Switch Slave to Master");
-			confirmation->set_type("master");
-			server->type = "master";
+			confirmation->set_type("1");
+			server->type = "1";
 		} else confirmation->set_type(serverinfo->type());
 		*/
-		if (server->type == "slave" && server_index == 0) {
+		if (server->type == "2" && server_index == 0) {
 			log(INFO, "Change Slave type to Master");
-			confirmation->set_type("master");
-			server->type = "master";
+			confirmation->set_type("1");
+			server->type = "1";
 		}
 		else confirmation->set_type(serverinfo->type());
 	} else {
@@ -126,11 +157,11 @@ class CoordServiceImpl final : public CoordService::Service {
 		server->hostname = serverinfo->hostname();
 		server->port = serverinfo->port();
 		if (clusters[cluster_index].size() == 0) {
-			server->type = "master";
-			confirmation->set_type("master");
+			server->type = "1";
+			confirmation->set_type("1");
 		} else {
-			server->type = "slave";
-			confirmation->set_type("slave");
+			server->type = "2";
+			confirmation->set_type("2");
 		}
 		server->last_heartbeat = getTimeNow();
 		clusters[cluster_index].push_back(server);
@@ -153,7 +184,7 @@ class CoordServiceImpl final : public CoordService::Service {
 	if (cluster_id > 3) return grpc::Status(grpc::StatusCode::NOT_FOUND, "Cluster ID not found");
 
 	for (zNode* s : clusters[cluster_id - 1]) {
-	    if (s->isActive() && s->type == "master") {
+	    if (s->isActive() && s->type == "1") {
 		serverinfo->set_serverid(s->serverID);
 		serverinfo->set_hostname(s->hostname);
 		serverinfo->set_port(s->port);
@@ -167,14 +198,12 @@ class CoordServiceImpl final : public CoordService::Service {
     }
 
     Status GetSlave(ServerContext* context, const ID* id, ServerInfo* serverinfo) override {
-	    int client_id = id->id();
-	    log(INFO, "Get Slave for Client ID: " + std::to_string(client_id));
-	    int cluster_id = ((client_id - 1) % 3) + 1;
-	    log(INFO, "Cluster ID: " + std::to_string(cluster_id));
+	    log(INFO, "Get Slave for Cluster ID: " + std::to_string(id->id()));
+	    int cluster_id = id->id();
 	    if (cluster_id > 3) return grpc::Status(grpc::StatusCode::NOT_FOUND, "Cluster ID not found");
 
 	    for (zNode* s : clusters[cluster_id - 1]) {
-		    if (s->isActive() && s->type == "slave") {
+		    if (s->isActive() && s->type == "2") {
 			    serverinfo->set_serverid(s->serverID);
 			    serverinfo->set_hostname(s->hostname);
 			    serverinfo->set_port(s->port);
@@ -185,6 +214,22 @@ class CoordServiceImpl final : public CoordService::Service {
 	    }
 	    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "No Slave found in the cluster now");
 
+    }
+
+    Status GetAllFollowerServers(ServerContext* context, const ID* id, ServerList* serverlist) override {
+    	log(INFO, "Get Follower Synchronizer list for Synchronizer ID: " + std::to_string(id->id()));
+	int cluster_index = ((id->id() - 1) % 3);
+	for (int i = 0; i < clusters.size(); i++) {
+		for (auto& s : clusters[i]) {
+			if (s->type == "synchronizer" && cluster_index != i) {
+				serverlist->add_serverid(s->serverID);
+				serverlist->add_hostname(s->hostname);
+				serverlist->add_port(s->port);
+				serverlist->add_type(s->type);
+			}
+		}
+	}
+	return Status::OK;
     }
 
 
@@ -250,7 +295,7 @@ void checkHeartbeat(){
                         //s->last_heartbeat = getTimeNow();
                     } else {
 			//missed last hearbeat, and miss this hearbeat: master die
-			if (s->type == "master") {
+			if (s->type == "1") {
 				//log(INFO, "Master DEAD: " + s->hostname + ":" + s->port);
 				//s->type == "dead";
 				c.erase(find(c.begin(), c.end(), s));

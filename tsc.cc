@@ -8,6 +8,7 @@
 #include <grpc++/grpc++.h>
 #include "client.h"
 #include <regex>
+#include <signal.h>
 
 #include "sns.grpc.pb.h"
 #include "coordinator.grpc.pb.h"
@@ -362,6 +363,10 @@ void Client::Timeline(const std::string& username) {
 }
 
 
+void signal_callback_handler(int signum) {
+	std::cout <<"Caught signal!" <<std::endl;
+	exit(0);
+}
 
 //////////////////////////////////////////////
 // Main Function
@@ -385,6 +390,12 @@ int main(int argc, char** argv) {
       std::cout << "Invalid Command Line Argument\n";
     }
   }
+
+  struct sigaction sa;
+  sa.sa_flags = 0;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_handler = signal_callback_handler;
+  sigaction(SIGINT, &sa, NULL);
       
   std::cout << "Logging Initialized. Client starting..."<<std::endl;
   
