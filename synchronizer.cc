@@ -193,9 +193,7 @@ public:
                 }
             }
         }
-	log(INFO, "I can run to here");
         updateAllUsersFile(allUsers);
-	log(INFO, "or bug here");
     }
 
     void publishClientRelations()

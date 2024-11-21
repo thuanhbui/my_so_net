@@ -47,6 +47,10 @@
 #include <google/protobuf/util/time_util.h>
 #include <grpc++/grpc++.h>
 #include<glog/logging.h>
+#include <sys/stat.h>
+#include <semaphore.h>
+#include <mutex>
+#include <fcntl.h>
 #define log(severity, msg) LOG(severity) << msg; google::FlushLogFiles(google::severity); 
 
 #include "sns.grpc.pb.h"
@@ -101,25 +105,10 @@ int lookup_user(std::string username) {
 	return -1;
 }
 
-void getSlave() {
-	ClientContext context;
-	ServerInfo slave;
-    	ID id;
-    	id.set_id(serverinfo.clusterid());
-    	Status status = stub_->GetSlave(&context, id, &slave);
-    	if (!status.ok()) {
-	     log(INFO, "GRPC failed when getting Slave");
-	     slave_stub_ = nullptr;
-    	} else {
-		log(INFO, "Successfully get Slave. Configuring Slave Stub ...");
-		std::string hostname = slave.hostname();
-		std::string port = slave.port();
-    		std::string slave_address = hostname + ":" + port;
-
-		auto slave_channel = grpc::CreateChannel(slave_address, grpc::InsecureChannelCredentials());
-    		slave_stub_ = std::unique_ptr<SNSService::Stub>(SNSService::NewStub(slave_channel));
-		log(INFO, "Finish configuring Slave Stub");
-	}
+void getSlave();
+std::vector<std::string> get_lines_from_file(std::string);
+std::time_t getTimeNow(){
+    return std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
 }
 
 class SNSServiceImpl final : public SNSService::Service {
@@ -425,6 +414,7 @@ class ServerProvider {
 	     cluster_id(c_id), server_id(s_id), hostname(hname), port(p), coord_ip(cdnt_ip), coord_port(cdnt_port) {}
      ~ServerProvider() {
 	     hb_thread.join();
+	     sync_users_thread.join();
      }
   void run() {
 	  setUpWithCoordinator();
@@ -439,10 +429,12 @@ class ServerProvider {
      std::string coord_port;
 
      std::thread hb_thread;
+     std::thread sync_users_thread;
 
      int setUpWithCoordinator();
      void RunServer();
      void sendHeartBeat();
+     void updateUserList();
 };
 
 int ServerProvider::setUpWithCoordinator() {
@@ -458,6 +450,7 @@ int ServerProvider::setUpWithCoordinator() {
      serverinfo.set_clusterid(std::stoi(cluster_id));
      
      hb_thread = std::thread(&ServerProvider::sendHeartBeat, this);
+     sync_users_thread = std::thread(&ServerProvider::updateUserList, this);
 
      //Set up files folder
      base_directory = "files/cluster_" + std::to_string(serverinfo.clusterid());
@@ -488,6 +481,32 @@ void ServerProvider::sendHeartBeat() {
 	}
 	std::this_thread::sleep_for(std::chrono::seconds(10));
      }	     
+}
+
+void ServerProvider::updateUserList() {
+	while (true) {
+		std::this_thread::sleep_for(std::chrono::seconds(5));
+		struct stat fileStat;
+		std::string file_path = base_directory + "/" + serverinfo.type() + "/all_users.txt";
+		const char* file_name = file_path.c_str();
+		if (stat(file_name, &fileStat) == 0) {
+			time_t m_time = fileStat.st_mtime;
+			if (difftime(getTimeNow(), m_time) < 5) {
+				log(INFO, "User list changed!");
+				std::vector<std::string> user_list = get_lines_from_file(file_path);
+				for (std::string user : user_list) {
+					if (lookup_user(user) == -1) {
+						Client* new_user = new Client();
+            					new_user->username = user;
+            					client_db.push_back(new_user);
+					}
+				}
+			}
+		} else {
+			log(ERROR, "Error getting file information. File path: " + file_path);
+		}
+
+	}
 }
 
 void ServerProvider::RunServer() {
@@ -545,3 +564,56 @@ int main(int argc, char** argv) {
 
   return 0;
 }
+
+std::vector<std::string> get_lines_from_file(std::string filename)
+{
+    std::vector<std::string> users;
+    std::string user;
+    std::ifstream file;
+    std::string semName = "/" + base_directory + "/" + serverinfo.type() + "_" + filename;
+    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+    file.open(filename);
+
+    if (file.peek() == std::ifstream::traits_type::eof())
+    {
+        // return empty vector if empty file
+        // std::cout<<"returned empty vector bc empty file"<<std::endl;
+        file.close();
+        sem_close(fileSem);
+        return users;
+    }
+    while (file)
+    {
+        getline(file, user);
+
+        if (!user.empty())
+            users.push_back(user);
+    }
+
+    file.close();
+    sem_close(fileSem);
+
+    return users;
+}
+
+void getSlave() {
+        ClientContext context;
+        ServerInfo slave;
+        ID id;
+        id.set_id(serverinfo.clusterid());
+        Status status = stub_->GetSlave(&context, id, &slave);
+        if (!status.ok()) {
+             log(INFO, "GRPC failed when getting Slave");
+             slave_stub_ = nullptr;
+        } else {
+                log(INFO, "Successfully get Slave. Configuring Slave Stub ...");
+                std::string hostname = slave.hostname();
+                std::string port = slave.port();
+                std::string slave_address = hostname + ":" + port;
+
+                auto slave_channel = grpc::CreateChannel(slave_address, grpc::InsecureChannelCredentials());
+                slave_stub_ = std::unique_ptr<SNSService::Stub>(SNSService::NewStub(slave_channel));
+                log(INFO, "Finish configuring Slave Stub");
+        }
+}
+
