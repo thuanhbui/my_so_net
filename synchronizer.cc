@@ -138,6 +138,7 @@ private:
 
         std::string message(static_cast<char *>(envelope.message.body.bytes), envelope.message.body.len);
         amqp_destroy_envelope(&envelope);
+	log(INFO, "Message from consume function: " + message);
         return message;
     }
 
@@ -163,7 +164,7 @@ public:
         }
         Json::FastWriter writer;
         std::string message = writer.write(userList);
-	log(INFO, "Publish USERS message: " +  message);
+	log(INFO, "Publish USERS LIST message: " +  message);
         publishMessage("synch" + std::to_string(synchID) + "_users_queue", message);
     }
 
@@ -179,7 +180,7 @@ public:
         {
             std::string queueName = "synch" + otherHosts[i] + "_users_queue";
             std::string message = consumeMessage(queueName, 1000); // 1 second timeout
-	    log(INFO, "Consume USERS from " + queueName + ". Message " + message);
+	    log(INFO, "Consume USERS LIST from " + queueName + ". Message: " + message);
             if (!message.empty())
             {
                 Json::Value root;
@@ -220,6 +221,7 @@ public:
 
         Json::FastWriter writer;
         std::string message = writer.write(relations);
+	log(INFO, "Publish USER RELATIONS message" + message);
         publishMessage("synch" + std::to_string(synchID) + "_clients_relations_queue", message);
     }
 
@@ -230,11 +232,12 @@ public:
         // YOUR CODE HERE
 
         // TODO: hardcoding 6 here, but you need to get list of all synchronizers from coordinator as before
-        for (int i = 1; i <= 6; i++)
+        for (int i = 0; i < total_number_of_registered_synchronizers; i++)
         {
 
-            std::string queueName = "synch" + std::to_string(i) + "_clients_relations_queue";
+            std::string queueName = "synch" + otherHosts[i] + "_clients_relations_queue";
             std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+	    log(INFO, "Consume USER RELATIONS from " + queueName + ". Message: " + message);
 
             if (!message.empty())
             {
@@ -365,7 +368,7 @@ void RunServer(std::string coordIP, std::string coordPort, std::string port_no, 
                                {
         while (true) {
             rabbitMQ.consumeUserLists();
-            //rabbitMQ.consumeClientRelations();
+            rabbitMQ.consumeClientRelations();
             //rabbitMQ.consumeTimelines();
             std::this_thread::sleep_for(std::chrono::seconds(5));
             // you can modify this sleep period as per your choice
@@ -635,8 +638,8 @@ std::vector<std::string> getFollowersOfUser(int ID)
 
     for (auto userID : usersInCluster)
     { // Examine each user's following file
-        std::string file = "files/cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + userID + "_follow_list.txt";
-        std::string semName = "/files/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + userID + "_follow_list.txt";
+        std::string file = "files/cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + userID + "_following.txt";
+        std::string semName = "/files/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + userID + "_following.txt";
         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
         // std::cout << "Reading file " << file << std::endl;
         if (file_contains_user(file, clientID))

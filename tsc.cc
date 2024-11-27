@@ -309,6 +309,7 @@ IReply Client::Login() {
     return ire;
 }
 
+
 // Timeline Command
 void Client::Timeline(const std::string& username) {
 
@@ -364,8 +365,8 @@ void Client::Timeline(const std::string& username) {
 
 
 void signal_callback_handler(int signum) {
-	std::cout <<"Caught signal!" <<std::endl;
-	exit(0);
+    std::cout <<"Logging out..." <<std::endl;
+    exit(0);
 }
 
 //////////////////////////////////////////////

@@ -105,6 +105,14 @@ int lookup_user(std::string username) {
 	return -1;
 }
 
+int lookup_follower(std::string username, std::vector<Client*> followers) {
+	for (int i = 0; i < followers.size(); i++) {
+		if (followers[i]->username == username)
+			return i;
+	}
+	return -1;
+}
+
 void getSlave();
 std::vector<std::string> get_lines_from_file(std::string);
 std::time_t getTimeNow(){
@@ -415,6 +423,7 @@ class ServerProvider {
      ~ServerProvider() {
 	     hb_thread.join();
 	     sync_users_thread.join();
+	     sync_relations_thread.join();
      }
   void run() {
 	  setUpWithCoordinator();
@@ -430,11 +439,14 @@ class ServerProvider {
 
      std::thread hb_thread;
      std::thread sync_users_thread;
+     std::thread sync_relations_thread;
 
      int setUpWithCoordinator();
      void RunServer();
      void sendHeartBeat();
      void updateUserList();
+     void updateClientsRelations();
+     void update_followers_of_user(std::string file_path, std::vector<Client*>& list);
 };
 
 int ServerProvider::setUpWithCoordinator() {
@@ -451,6 +463,7 @@ int ServerProvider::setUpWithCoordinator() {
      
      hb_thread = std::thread(&ServerProvider::sendHeartBeat, this);
      sync_users_thread = std::thread(&ServerProvider::updateUserList, this);
+     sync_relations_thread = std::thread(&ServerProvider::updateClientsRelations, this);
 
      //Set up files folder
      base_directory = "files/cluster_" + std::to_string(serverinfo.clusterid());
@@ -484,6 +497,7 @@ void ServerProvider::sendHeartBeat() {
 }
 
 void ServerProvider::updateUserList() {
+	bool first_fetch = true;
 	while (true) {
 		std::this_thread::sleep_for(std::chrono::seconds(5));
 		struct stat fileStat;
@@ -491,21 +505,75 @@ void ServerProvider::updateUserList() {
 		const char* file_name = file_path.c_str();
 		if (stat(file_name, &fileStat) == 0) {
 			time_t m_time = fileStat.st_mtime;
-			if (difftime(getTimeNow(), m_time) < 5) {
+			if (difftime(getTimeNow(), m_time) < 10 || first_fetch) {
 				log(INFO, "User list changed!");
 				std::vector<std::string> user_list = get_lines_from_file(file_path);
 				for (std::string user : user_list) {
+					log(INFO, "User list from file: " + user);
 					if (lookup_user(user) == -1) {
-						Client* new_user = new Client();
-            					new_user->username = user;
-            					client_db.push_back(new_user);
+					   Client* new_user = new Client();
+            			           new_user->username = user;
+					   new_user->connected = false;
+					   client_db.push_back(new_user);
 					}
 				}
+				if (first_fetch) {
+					for (Client* user : client_db) {
+					      std::string followers_path = base_directory + "/" + serverinfo.type() + "/" + user->username + "_followers.txt";
+					      std::string following_path = base_directory + "/" + serverinfo.type() + "/" + user->username + "_following.txt";
+					      log(INFO, "followers before update " + std::to_string(user->client_followers.size()));
+					      log(INFO, "following before update " + std::to_string(user->client_following.size()));
+					      update_followers_of_user(followers_path, user->client_followers);
+					      update_followers_of_user(following_path, user->client_following);
+					      log(INFO, "followers after update "  + std::to_string(user->client_followers.size()));
+					      log(INFO, "following after update " + std::to_string(user->client_following.size()));
+					}
+
+				}
+				first_fetch = false;
 			}
 		} else {
 			log(ERROR, "Error getting file information. File path: " + file_path);
 		}
+	}
+}
 
+void ServerProvider::updateClientsRelations() {
+	while (true) {
+		std::this_thread::sleep_for(std::chrono::seconds(5));
+		std::string path = base_directory + "/" + serverinfo.type() + "/";
+
+		for (Client* c : client_db) {
+            		int c_cluster = (std::stoi(c->username) - 1)%3 + 1;
+			if (c_cluster != serverinfo.clusterid()) continue;
+			std::string file_path = path + c->username + "_followers.txt";
+			const char* file_name = file_path.c_str();
+			struct stat fileStat;
+			if (stat(file_name, &fileStat) == 0) {
+				time_t m_time = fileStat.st_mtime;
+				if (difftime(getTimeNow(), m_time) < 10) {
+					log(INFO, "Followers list changed for user " + c->username);
+					update_followers_of_user(file_path, c->client_followers);
+				}
+				
+    			} else {
+				log(ERROR, "Error getting file information. File path: " + file_path);
+			}
+
+		}	
+	}
+}
+
+void ServerProvider::update_followers_of_user(std::string file_path, std::vector<Client*>& list) {
+	std::vector<std::string> user_list = get_lines_from_file(file_path);
+	for (std::string username : user_list) {
+		if (lookup_follower(username, list) == -1) {
+			int new_user_index = lookup_user(username);
+			if (new_user_index >= 0) {
+				Client* new_user = client_db[new_user_index];
+				list.push_back(new_user);
+			}
+		}
 	}
 }
 
