@@ -81,6 +81,7 @@ std::vector<std::string> get_lines_from_file(std::string);
 std::vector<std::string> get_all_users_func(int);
 std::vector<std::string> get_tl_or_fl(int, int, bool);
 std::vector<std::string> getFollowersOfUser(int);
+std::vector<std::string> getAllFollowers(int);
 bool file_contains_user(std::string filename, std::string user);
 
 void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInfo serverInfo, int syncID);
@@ -111,11 +112,25 @@ private:
                            0, 0, 0, 0, amqp_empty_table);
     }
 
-    void publishMessage(const std::string &queueName, const std::string &message)
-    {
-        amqp_basic_publish(conn, channel, amqp_empty_bytes, amqp_cstring_bytes(queueName.c_str()),
-                           0, 0, NULL, amqp_cstring_bytes(message.c_str()));
+    void declareExchange(const std::string &exchangeName) {
+    	amqp_exchange_declare(conn, channel, amqp_cstring_bytes(exchangeName.c_str()),
+			amqp_cstring_bytes("fanout"), 0, 0, 0, 0 ,amqp_empty_table);
     }
+
+    void bindExchange(const std::string &exName, const std::string &queueName) {
+    	amqp_queue_bind(conn, channel, amqp_cstring_bytes(queueName.c_str()),
+                amqp_cstring_bytes(exName.c_str()), amqp_empty_bytes, amqp_empty_table);
+    }
+
+
+    void publishMessage(const std::string &exchangeName, const std::string &message)
+    {
+	amqp_basic_publish(conn, channel, amqp_cstring_bytes(exchangeName.c_str()), amqp_empty_bytes, 
+			0, 0, NULL, amqp_cstring_bytes(message.c_str()));
+        //amqp_basic_publish(conn, channel, amqp_empty_bytes, amqp_cstring_bytes(queueName.c_str()),
+                           //0, 0, NULL, amqp_cstring_bytes(message.c_str()));
+    }
+
 
     std::string consumeMessage(const std::string &queueName, int timeout_ms = 5000)
     {
@@ -138,7 +153,7 @@ private:
 
         std::string message(static_cast<char *>(envelope.message.body.bytes), envelope.message.body.len);
         amqp_destroy_envelope(&envelope);
-	log(INFO, "Message from consume function: " + message);
+	//log(INFO, "Message from consume function: " + message);
         return message;
     }
 
@@ -146,9 +161,16 @@ public:
     SynchronizerRabbitMQ(const std::string &host, int p, int id) : hostname(host), port(p), channel(1), synchID(id)
     {
         setupRabbitMQ();
-        declareQueue("synch" + std::to_string(synchID) + "_users_queue");
+	declareExchange("ex_users");
+	declareExchange("ex_relations");
+	declareExchange("ex_timeline");
+	declareQueue("synch" + std::to_string(synchID) + "_users_queue");
         declareQueue("synch" + std::to_string(synchID) + "_clients_relations_queue");
         declareQueue("synch" + std::to_string(synchID) + "_timeline_queue");
+	bindExchange("ex_users", "synch" + std::to_string(synchID) + "_users_queue");
+	bindExchange("ex_relations", "synch" + std::to_string(synchID) + "_clients_relations_queue");
+	bindExchange("ex_timeline", "synch" + std::to_string(synchID) + "_timeline_queue");
+
         // TODO: add or modify what kind of queues exist in your clusters based on your needs
     }
 
@@ -164,8 +186,12 @@ public:
         }
         Json::FastWriter writer;
         std::string message = writer.write(userList);
-	log(INFO, "Publish USERS LIST message: " +  message);
-        publishMessage("synch" + std::to_string(synchID) + "_users_queue", message);
+	log(INFO, "Publish USERS LIST. Message: " +  message);
+	//for (int i = 0; i < total_number_of_registered_synchronizers; i++) {
+	//	publishMessage("synch" + otherHosts[i] + "_users_queue", message);
+	//}
+        publishMessage("ex_users", message);
+	//publishMessage("synch" + std::to_string(synchID) + "_users_queue", message);
     }
 
     void consumeUserLists()
@@ -176,9 +202,8 @@ public:
         // TODO: while the number of synchronizers is harcorded as 6 right now, you need to change this
         // to use the correct number of follower synchronizers that exist overall
         // accomplish this by making a gRPC request to the coordinator asking for the list of all follower synchronizers registered with it
-        for (int i = 0; i < total_number_of_registered_synchronizers; i++)
-        {
-            std::string queueName = "synch" + otherHosts[i] + "_users_queue";
+        //for (int i = 0; i < total_number_of_registered_synchronizers; i++) {
+            std::string queueName = "synch" + std::to_string(synchID) + "_users_queue";
             std::string message = consumeMessage(queueName, 1000); // 1 second timeout
 	    log(INFO, "Consume USERS LIST from " + queueName + ". Message: " + message);
             if (!message.empty())
@@ -193,7 +218,7 @@ public:
                     }
                 }
             }
-        }
+        //}
         updateAllUsersFile(allUsers);
     }
 
@@ -221,8 +246,11 @@ public:
 
         Json::FastWriter writer;
         std::string message = writer.write(relations);
-	log(INFO, "Publish USER RELATIONS message" + message);
-        publishMessage("synch" + std::to_string(synchID) + "_clients_relations_queue", message);
+	log(INFO, "Publish USER RELATIONS. Message" + message);
+	//for (int i = 0; i < total_number_of_registered_synchronizers; i++) {
+	//	publishMessage("synch" + otherHosts[i] + "_clients_relations_queue", message);
+	//}
+	publishMessage("ex_relations", message);
     }
 
     void consumeClientRelations()
@@ -232,10 +260,9 @@ public:
         // YOUR CODE HERE
 
         // TODO: hardcoding 6 here, but you need to get list of all synchronizers from coordinator as before
-        for (int i = 0; i < total_number_of_registered_synchronizers; i++)
-        {
+        //for (int i = 0; i < total_number_of_registered_synchronizers; i++) {
 
-            std::string queueName = "synch" + otherHosts[i] + "_clients_relations_queue";
+            std::string queueName = "synch" + std::to_string(synchID) + "_clients_relations_queue";
             std::string message = consumeMessage(queueName, 1000); // 1 second timeout
 	    log(INFO, "Consume USER RELATIONS from " + queueName + ". Message: " + message);
 
@@ -266,7 +293,7 @@ public:
                     }
                 }
             }
-        }
+        //}
     }
 
     // for every client in your cluster, update all their followers' timeline files
@@ -274,10 +301,12 @@ public:
     //  periodically to the message queue of the synchronizer responsible for that client
     void publishTimelines()
     {
+	    log(INFO, "publish timeline");
         std::vector<std::string> users = get_all_users_func(synchID);
-
+	//log(INFO, "LOOP THROUGH USERS TO GENERATE TIMELINE MESSAGE");
         for (const auto &client : users)
         {
+		//log(INFO, "user: " + client);
             int clientId = std::stoi(client);
             int client_cluster = ((clientId - 1) % 3) + 1;
             // only do this for clients in your own cluster
@@ -287,13 +316,30 @@ public:
             }
 
             std::vector<std::string> timeline = get_tl_or_fl(synchID, clientId, true);
-            std::vector<std::string> followers = getFollowersOfUser(clientId);
+            std::vector<std::string> followers = getAllFollowers(clientId);
 
+	    Json::Value timeline_msg;
+	    for (const auto &post : timeline) {
+		    timeline_msg[client].append(post);
+	    }
+	    Json::FastWriter writer;
+	    std::string message = writer.write(timeline_msg);
+	    //log(INFO, "message: " + message);
+	    //log(INFO, "LIST FOLLOWERS TO PUBLISH");
             for (const auto &follower : followers)
             {
+		  // log(INFO, "follower: " + follower);
                 // send the timeline updates of your current user to all its followers
 
                 // YOUR CODE HERE
+		int cluster_id = ((std::stoi(follower)-1)%3) + 1;
+		if (client_cluster == cluster_id) continue;
+		int sync_m = cluster_id;
+		int sync_s = cluster_id + 3;
+
+		//log(INFO, "Publish TIMELINE to user " + follower + ". Message: " + message);
+		//publishMessage("synch" + std::to_string(sync_m) + "_timeline_queue", message);
+		//publishMessage("synch" + std::to_string(sync_s) + "_timeline_queue", message);
             }
         }
     }
@@ -301,8 +347,10 @@ public:
     // For each client in your cluster, consume messages from your timeline queue and modify your client's timeline files based on what the users they follow posted to their timeline
     void consumeTimelines()
     {
+	    log(INFO, "consume timeline");
         std::string queueName = "synch" + std::to_string(synchID) + "_timeline_queue";
         std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+	//log(INFO, "Consuming timelines: " + message);
 
         if (!message.empty())
         {
@@ -458,7 +506,7 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
 		log(INFO, "GRPC failed when getting all follower synchronizers");
 	} else {
 		log(INFO, "Successfully getting all follower synchrnizers");
-		log(INFO, "List size: " + std::to_string(followerServers.serverid_size()));
+		//log(INFO, "List size: " + std::to_string(followerServers.serverid_size()));
 	}
 
         std::vector<int> server_ids;
@@ -481,7 +529,7 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
 	for (int i = 0; i < total_number_of_registered_synchronizers; i++) {
 		//std::string host_info = hosts[i] + ":" + ports[i];
 		otherHosts.push_back(std::to_string(server_ids[i]));
-		log(INFO, "Synchronizer ID: " + std::to_string(server_ids[i]));
+		//log(INFO, "Synchronizer ID: " + std::to_string(server_ids[i]));
 	}
 
         // below here, you run all the update functions that synchronize the state across all the clusters
@@ -650,4 +698,11 @@ std::vector<std::string> getFollowersOfUser(int ID)
     }
 
     return followers;
+}
+
+std::vector<std::string> getAllFollowers(int ID) {
+	std::string clientID = std::to_string(ID);
+	std::string file = "files/cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + clientID + "_followers.txt";
+	std::vector<std::string> followers = get_lines_from_file(file);
+	return followers;
 }
