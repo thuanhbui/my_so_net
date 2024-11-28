@@ -141,6 +141,18 @@ class SNSServiceImpl final : public SNSService::Service {
   }
 
   Status Follow(ServerContext* context, const Request* request, Reply* reply) override {
+    
+    if (serverinfo.type() == "1") {
+	    getSlave();
+	    if (slave_stub_ != nullptr) {
+		ClientContext slaveContext;
+	    	Request slaveRequest;
+	    	Reply slaveReply;
+		slaveRequest.set_username(request->username());
+		slaveRequest.add_arguments(request->arguments(0));
+	    	Status status = slave_stub_->Follow(&slaveContext, slaveRequest, &slaveReply);
+	    }
+    }
 
     std::string current_username = request->username();
     std::string follow_username = request->arguments(0);
@@ -352,17 +364,21 @@ class SNSServiceImpl final : public SNSService::Service {
 				    else {
  					    msg.set_username(msg_u);
 					    msg.set_msg(msg_w);
+					    std::replace(msg_t.begin(), msg_t.end(), ' ', 'T');
+    					    msg_t += "Z";
 					    google::protobuf::Timestamp msg_timestamp;
 					    google::protobuf::util::TimeUtil::FromString(msg_t, &msg_timestamp);
 					    msg.mutable_timestamp()->CopyFrom(msg_timestamp);
 					    messages.push_back(msg);
+
+					    log(INFO, "time: " + msg_t);
 					    
 					    msg_t.clear(); 
 					    msg_u.clear();
 					    msg_w.clear();				    
 				    } 
 			    }
-			    for (int i = messages.size() - 1; i >= 0; i--) {
+			    for (int i = 0; i < messages.size(); i++) {
 				    stream->Write(messages[i]);
 			    }
 		    } else {
@@ -446,6 +462,7 @@ class ServerProvider {
      void sendHeartBeat();
      void updateUserList();
      void updateClientsRelations();
+     void updateTimeline();
      void update_followers_of_user(std::string file_path, std::vector<Client*>& list);
 };
 
@@ -562,6 +579,31 @@ void ServerProvider::updateClientsRelations() {
 
 		}	
 	}
+}
+
+void ServerProvider::updateTimeline() {
+	while (true) {
+		std::this_thread::sleep_for(std::chrono::seconds(5));
+		std::string path = base_directory + "/" + serverinfo.type() + "/";
+		for (Client* c : client_db) {
+			int c_cluster = (std::stoi(c->username) - 1)%3 + 1;
+			if (c_cluster != serverinfo.clusterid()) continue;
+			std::string file_path = path + c->username + "_timeline.txt";
+			const char* file_name = file_path.c_str();
+			struct stat fileStat;
+			if (stat(file_name, &fileStat) == 0) {
+				time_t m_time = fileStat.st_mtime;
+				if (difftime(getTimeNow(), m_time) < 5) {
+					log(INFO, "Timeline updated for user " + c->username);
+					update_timeline_of_user(file_path, c->	
+				}
+			}
+		}
+	}
+}
+
+void ServerProvider::update_timeline_of_user(std::string file_path, Client* c) {
+	
 }
 
 void ServerProvider::update_followers_of_user(std::string file_path, std::vector<Client*>& list) {
