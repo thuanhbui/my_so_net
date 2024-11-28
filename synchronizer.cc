@@ -79,10 +79,15 @@ std::unordered_map<std::string, int> timelineLengths;
 
 std::vector<std::string> get_lines_from_file(std::string);
 std::vector<std::string> get_all_users_func(int);
+std::vector<std::string> get_all_users_func_pub(int);
 std::vector<std::string> get_tl_or_fl(int, int, bool);
 std::vector<std::string> getFollowersOfUser(int);
+std::vector<std::string> getFollowersOfUser_pub(int);
 std::vector<std::string> getAllFollowers(int);
 bool file_contains_user(std::string filename, std::string user);
+std::time_t getTimeNow(){
+    return std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+}
 
 void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInfo serverInfo, int syncID);
 
@@ -92,7 +97,8 @@ class SynchronizerRabbitMQ
 {
 private:
     amqp_connection_state_t conn;
-    amqp_channel_t channel;
+    amqp_channel_t publish_channel;
+    amqp_channel_t consume_channel;
     std::string hostname;
     int port;
     int synchID;
@@ -103,27 +109,28 @@ private:
         amqp_socket_t *socket = amqp_tcp_socket_new(conn);
         amqp_socket_open(socket, hostname.c_str(), port);
         amqp_login(conn, "/", 0, 131072, 0, AMQP_SASL_METHOD_PLAIN, "guest", "guest");
-        amqp_channel_open(conn, channel);
+	amqp_channel_open(conn, publish_channel);
+	amqp_channel_open(conn, consume_channel);
     }
 
-    void declareQueue(const std::string &queueName)
+    void declareQueue(const std::string &queueName, amqp_channel_t channel)
     {
         amqp_queue_declare(conn, channel, amqp_cstring_bytes(queueName.c_str()),
                            0, 0, 0, 0, amqp_empty_table);
     }
 
-    void declareExchange(const std::string &exchangeName) {
+    void declareExchange(const std::string &exchangeName, amqp_channel_t channel) {
     	amqp_exchange_declare(conn, channel, amqp_cstring_bytes(exchangeName.c_str()),
 			amqp_cstring_bytes("fanout"), 0, 0, 0, 0 ,amqp_empty_table);
     }
 
-    void bindExchange(const std::string &exName, const std::string &queueName) {
+    void bindExchange(const std::string &exName, const std::string &queueName, amqp_channel_t channel) {
     	amqp_queue_bind(conn, channel, amqp_cstring_bytes(queueName.c_str()),
                 amqp_cstring_bytes(exName.c_str()), amqp_empty_bytes, amqp_empty_table);
     }
 
 
-    void publishMessage(const std::string &exchangeName, const std::string &message)
+    void publishMessage(const std::string &exchangeName, const std::string &message, amqp_channel_t channel)
     {
 	amqp_basic_publish(conn, channel, amqp_cstring_bytes(exchangeName.c_str()), amqp_empty_bytes, 
 			0, 0, NULL, amqp_cstring_bytes(message.c_str()));
@@ -132,7 +139,7 @@ private:
     }
 
 
-    std::string consumeMessage(const std::string &queueName, int timeout_ms = 5000)
+    std::string consumeMessage(const std::string &queueName, int timeout_ms, amqp_channel_t channel)
     {
         amqp_basic_consume(conn, channel, amqp_cstring_bytes(queueName.c_str()),
                            amqp_empty_bytes, 0, 1, 0, amqp_empty_table);
@@ -152,31 +159,32 @@ private:
         }
 
         std::string message(static_cast<char *>(envelope.message.body.bytes), envelope.message.body.len);
+	amqp_basic_ack(conn, channel, envelope.delivery_tag, 0);
         amqp_destroy_envelope(&envelope);
 	//log(INFO, "Message from consume function: " + message);
         return message;
     }
 
 public:
-    SynchronizerRabbitMQ(const std::string &host, int p, int id) : hostname(host), port(p), channel(1), synchID(id)
+    SynchronizerRabbitMQ(const std::string &host, int p, int id) : hostname(host), port(p), publish_channel(1), consume_channel(2), synchID(id)
     {
         setupRabbitMQ();
-	declareExchange("ex_users");
-	declareExchange("ex_relations");
-	declareExchange("ex_timeline");
-	declareQueue("synch" + std::to_string(synchID) + "_users_queue");
-        declareQueue("synch" + std::to_string(synchID) + "_clients_relations_queue");
-        declareQueue("synch" + std::to_string(synchID) + "_timeline_queue");
-	bindExchange("ex_users", "synch" + std::to_string(synchID) + "_users_queue");
-	bindExchange("ex_relations", "synch" + std::to_string(synchID) + "_clients_relations_queue");
-	bindExchange("ex_timeline", "synch" + std::to_string(synchID) + "_timeline_queue");
-
+	declareExchange("ex_users", publish_channel);
+	declareExchange("ex_relations", publish_channel);
+	declareExchange("ex_timeline", publish_channel);
+	declareQueue("synch" + std::to_string(synchID) + "_users_queue", consume_channel);
+        declareQueue("synch" + std::to_string(synchID) + "_clients_relations_queue", consume_channel);
+        declareQueue("synch" + std::to_string(synchID) + "_timeline_queue", consume_channel);
+	bindExchange("ex_users", "synch" + std::to_string(synchID) + "_users_queue", consume_channel);
+	bindExchange("ex_relations", "synch" + std::to_string(synchID) + "_clients_relations_queue", consume_channel);
+	bindExchange("ex_timeline", "synch" + std::to_string(synchID) + "_timeline_queue", consume_channel);
         // TODO: add or modify what kind of queues exist in your clusters based on your needs
     }
 
     void publishUserList()
     {
-        std::vector<std::string> users = get_all_users_func(synchID);
+        std::vector<std::string> users = get_all_users_func_pub(synchID);
+	if (users.empty()) return;
         std::sort(users.begin(), users.end());
         Json::Value userList;
 
@@ -190,7 +198,7 @@ public:
 	//for (int i = 0; i < total_number_of_registered_synchronizers; i++) {
 	//	publishMessage("synch" + otherHosts[i] + "_users_queue", message);
 	//}
-        publishMessage("ex_users", message);
+        publishMessage("ex_users", message, publish_channel);
 	//publishMessage("synch" + std::to_string(synchID) + "_users_queue", message);
     }
 
@@ -202,9 +210,8 @@ public:
         // TODO: while the number of synchronizers is harcorded as 6 right now, you need to change this
         // to use the correct number of follower synchronizers that exist overall
         // accomplish this by making a gRPC request to the coordinator asking for the list of all follower synchronizers registered with it
-        //for (int i = 0; i < total_number_of_registered_synchronizers; i++) {
             std::string queueName = "synch" + std::to_string(synchID) + "_users_queue";
-            std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+            std::string message = consumeMessage(queueName, 1000, consume_channel); // 1 second timeout
 	    log(INFO, "Consume USERS LIST from " + queueName + ". Message: " + message);
             if (!message.empty())
             {
@@ -218,7 +225,6 @@ public:
                     }
                 }
             }
-        //}
         updateAllUsersFile(allUsers);
     }
 
@@ -230,7 +236,7 @@ public:
         for (const auto &client : users)
         {
             int clientId = std::stoi(client);
-            std::vector<std::string> followers = getFollowersOfUser(clientId);
+            std::vector<std::string> followers = getFollowersOfUser_pub(clientId);
 
             Json::Value followerList(Json::arrayValue);
             for (const auto &follower : followers)
@@ -246,11 +252,10 @@ public:
 
         Json::FastWriter writer;
         std::string message = writer.write(relations);
-	log(INFO, "Publish USER RELATIONS. Message" + message);
-	//for (int i = 0; i < total_number_of_registered_synchronizers; i++) {
-	//	publishMessage("synch" + otherHosts[i] + "_clients_relations_queue", message);
-	//}
-	publishMessage("ex_relations", message);
+	if (!relations.isNull() && !relations.empty() && message != "null") {
+		log(INFO, "Publish USER RELATIONS. Message" + message);	
+		publishMessage("ex_relations", message, publish_channel);
+	}
     }
 
     void consumeClientRelations()
@@ -260,10 +265,9 @@ public:
         // YOUR CODE HERE
 
         // TODO: hardcoding 6 here, but you need to get list of all synchronizers from coordinator as before
-        //for (int i = 0; i < total_number_of_registered_synchronizers; i++) {
 
-            std::string queueName = "synch" + std::to_string(synchID) + "_clients_relations_queue";
-            std::string message = consumeMessage(queueName, 1000); // 1 second timeout
+            std::string queueName = "synch" + std::to_string(synchID) + "_clients_relations_queue_hehe";
+            std::string message = consumeMessage(queueName, 1000, consume_channel); // 1 second timeout
 	    log(INFO, "Consume USER RELATIONS from " + queueName + ". Message: " + message);
 
             if (!message.empty())
@@ -274,8 +278,10 @@ public:
                 {
                     for (const auto &client : allUsers)
                     {
+			    std::string folder = "files/cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory;
+			if (!fs::exists(folder)) { fs::create_directories(folder);}    
                         std::string followerFile = "files/cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + client + "_followers.txt";
-                        std::string semName = "/files/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + client + "_followers.txt";
+		     	std::string semName = "/files/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + client + "_followers.txt";
                         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
 
                         std::ofstream followerStream(followerFile, std::ios::app | std::ios::out | std::ios::in);
@@ -293,7 +299,6 @@ public:
                     }
                 }
             }
-        //}
     }
 
     // for every client in your cluster, update all their followers' timeline files
@@ -301,12 +306,11 @@ public:
     //  periodically to the message queue of the synchronizer responsible for that client
     void publishTimelines()
     {
-	    log(INFO, "publish timeline");
         std::vector<std::string> users = get_all_users_func(synchID);
-	//log(INFO, "LOOP THROUGH USERS TO GENERATE TIMELINE MESSAGE");
+	log(INFO, "LOOP THROUGH USERS TO GENERATE TIMELINE MESSAGE");
         for (const auto &client : users)
         {
-		//log(INFO, "user: " + client);
+	    log(INFO, "user: " + client);
             int clientId = std::stoi(client);
             int client_cluster = ((clientId - 1) % 3) + 1;
             // only do this for clients in your own cluster
@@ -324,11 +328,11 @@ public:
 	    }
 	    Json::FastWriter writer;
 	    std::string message = writer.write(timeline_msg);
-	    //log(INFO, "message: " + message);
-	    //log(INFO, "LIST FOLLOWERS TO PUBLISH");
+	    log(INFO, "Timeline message: " + message);
+	    log(INFO, "LIST FOLLOWERS TO PUBLISH");
             for (const auto &follower : followers)
             {
-		  // log(INFO, "follower: " + follower);
+		log(INFO, "follower: " + follower);
                 // send the timeline updates of your current user to all its followers
 
                 // YOUR CODE HERE
@@ -337,9 +341,7 @@ public:
 		int sync_m = cluster_id;
 		int sync_s = cluster_id + 3;
 
-		//log(INFO, "Publish TIMELINE to user " + follower + ". Message: " + message);
-		//publishMessage("synch" + std::to_string(sync_m) + "_timeline_queue", message);
-		//publishMessage("synch" + std::to_string(sync_s) + "_timeline_queue", message);
+		publishMessage("ex_timeline", message, publish_channel);
             }
         }
     }
@@ -347,10 +349,9 @@ public:
     // For each client in your cluster, consume messages from your timeline queue and modify your client's timeline files based on what the users they follow posted to their timeline
     void consumeTimelines()
     {
-	    log(INFO, "consume timeline");
-        std::string queueName = "synch" + std::to_string(synchID) + "_timeline_queue";
-        std::string message = consumeMessage(queueName, 1000); // 1 second timeout
-	//log(INFO, "Consuming timelines: " + message);
+        std::string queueName = "synch" + std::to_string(synchID) + "_timeline_queue_hehe";
+        std::string message = consumeMessage(queueName, 1000, consume_channel); // 1 second timeout
+	log(INFO, "Consuming timelines: " + message);
 
         if (!message.empty())
         {
@@ -364,7 +365,8 @@ public:
 private:
     void updateAllUsersFile(const std::vector<std::string> &users)
     {
-
+	std::string folder = "files/cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory;
+	if (!fs::exists(folder)) { fs::create_directories(folder);}
         std::string usersFile = "files/cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/all_users.txt";
         std::string semName = "/files/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_all_users.txt";
         sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
@@ -417,15 +419,13 @@ void RunServer(std::string coordIP, std::string coordPort, std::string port_no, 
         while (true) {
             rabbitMQ.consumeUserLists();
             rabbitMQ.consumeClientRelations();
-            //rabbitMQ.consumeTimelines();
+            rabbitMQ.consumeTimelines();
             std::this_thread::sleep_for(std::chrono::seconds(5));
             // you can modify this sleep period as per your choice
         } });
-
     server->Wait();
-
-       t1.join();
-       consumerThread.join();
+	t1.join();
+    consumerThread.join();
 }
 
 int main(int argc, char **argv)
@@ -534,8 +534,8 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
 
         // below here, you run all the update functions that synchronize the state across all the clusters
         // make any modifications as necessary to satisfy the assignments requirements
-
-        // Publish user list
+        
+	// Publish user list
         rabbitMQ.publishUserList();
 
         // Publish client relations
@@ -630,6 +630,23 @@ bool file_contains_user(std::string filename, std::string user)
     return false;
 }
 
+std::vector<std::string> get_all_users_func_pub(int synchID) {
+	std::string clusterID = std::to_string(((synchID - 1) % 3) + 1);
+    std::string master_users_file = "files/cluster_" + clusterID + "/1/all_users.txt";
+    std::string slave_users_file = "files/cluster_" + clusterID + "/2/all_users.txt";
+    const char* file_name = master_users_file.c_str();
+    struct stat fileStat;
+                        if (stat(file_name, &fileStat) == 0) {
+                                time_t m_time = fileStat.st_mtime;
+                                if (difftime(getTimeNow(), m_time) < 10) {
+                                        log(INFO, "Users list changed");
+					return get_all_users_func(synchID);
+                                }
+
+                        }
+	return std::vector<std::string>();
+}
+
 std::vector<std::string> get_all_users_func(int synchID)
 {
     // read all_users file master and client for correct serverID
@@ -700,6 +717,36 @@ std::vector<std::string> getFollowersOfUser(int ID)
     return followers;
 }
 
+std::vector<std::string> getFollowersOfUser_pub(int ID)
+{
+    std::vector<std::string> followers;
+    std::string clientID = std::to_string(ID);
+    std::vector<std::string> usersInCluster = get_all_users_func(synchID);
+
+    for (auto userID : usersInCluster)
+    { // Examine each user's following file
+        std::string file = "files/cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + userID + "_following.txt";
+	const char* file_name = file.c_str();
+                        struct stat fileStat;
+                        if (stat(file_name, &fileStat) == 0) {
+                                time_t m_time = fileStat.st_mtime;
+                                if (difftime(getTimeNow(), m_time) > 10) {
+					continue;
+                                }
+
+                        }
+        std::string semName = "/files/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + userID + "_following.txt";
+        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+        // std::cout << "Reading file " << file << std::endl;
+        if (file_contains_user(file, clientID))
+        {
+            followers.push_back(userID);
+        }
+        sem_close(fileSem);
+    }
+
+    return followers;
+}
 std::vector<std::string> getAllFollowers(int ID) {
 	std::string clientID = std::to_string(ID);
 	std::string file = "files/cluster_" + std::to_string(clusterID) + "/" + clusterSubdirectory + "/" + clientID + "_followers.txt";
