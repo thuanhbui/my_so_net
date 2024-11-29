@@ -58,6 +58,7 @@ std::mutex v_mutex;
 std::vector<zNode*> cluster1;
 std::vector<zNode*> cluster2;
 std::vector<zNode*> cluster3;
+std::vector<bool> master_die = {false, false, false};
 
 // creating a vector of vectors containing znodes
 std::vector<std::vector<zNode*>> clusters = {cluster1, cluster2, cluster3};
@@ -122,11 +123,12 @@ class CoordServiceImpl final : public CoordService::Service {
 			synchronizer->last_heartbeat = getTimeNow();
 			clusters[cluster_index].push_back(synchronizer);	
 		}
-		if (server_id == serverinfo->clusterid()) {
-				confirmation->set_type("1");
-			} else {
-				confirmation->set_type("2");
-			}
+		if ((server_id == serverinfo->clusterid() && !master_die[cluster_index]) 
+				|| (server_id != serverinfo->clusterid() && master_die[cluster_index])) {
+			confirmation->set_type("1");
+		} else {
+			confirmation->set_type("2");
+		}
 		confirmation->set_status(true);
 		return Status::OK;
 	}
@@ -145,6 +147,7 @@ class CoordServiceImpl final : public CoordService::Service {
 			log(INFO, "Change Slave type to Master");
 			confirmation->set_type("1");
 			server->type = "1";
+			master_die[cluster_index] = true;
 		}
 		else confirmation->set_type(serverinfo->type());
 	} else {

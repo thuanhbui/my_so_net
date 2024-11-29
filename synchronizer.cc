@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <unistd.h>
 #include <algorithm>
+#include <tuple>
 #include <google/protobuf/util/time_util.h>
 #include <grpc++/grpc++.h>
 #include <glog/logging.h>
@@ -85,8 +86,18 @@ std::vector<std::string> getFollowersOfUser(int);
 std::vector<std::string> getFollowersOfUser_pub(int);
 std::vector<std::string> getAllFollowers(int);
 bool file_contains_user(std::string filename, std::string user);
+bool file_contains_post(std::string filename, std::string t, std::string u, std::string w);
 std::time_t getTimeNow(){
     return std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+}
+std::time_t getProtoTime(std::string t) {
+     std::string msg_t = t.substr(2);
+     std::replace(msg_t.begin(), msg_t.end(), ' ', 'T');
+     msg_t += "Z";
+     google::protobuf::Timestamp msg_timestamp;
+     google::protobuf::util::TimeUtil::FromString(msg_t, &msg_timestamp);
+     std::time_t time_in_seconds = msg_timestamp.seconds();
+     return time_in_seconds;
 }
 
 void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInfo serverInfo, int syncID);
@@ -111,19 +122,19 @@ private:
         amqp_socket_open(socket, hostname.c_str(), port);
         amqp_login(conn, "/", 0, 131072, 0, AMQP_SASL_METHOD_PLAIN, "guest", "guest");
 	amqp_channel_open(conn, users_channel);
-	amqp_channel_open(conn, relations_channel);
-	amqp_channel_open(conn, timeline_channel);
+	//amqp_channel_open(conn, relations_channel);
+	//amqp_channel_open(conn, timeline_channel);
     }
 
     void declareQueue(const std::string &queueName, amqp_channel_t channel)
     {
         amqp_queue_declare(conn, channel, amqp_cstring_bytes(queueName.c_str()),
-                           0, 0, 0, 0, amqp_empty_table);
+                           0, 0, 1, 0, amqp_empty_table);
     }
 
     void declareExchange(const std::string &exchangeName, amqp_channel_t channel) {
     	amqp_exchange_declare(conn, channel, amqp_cstring_bytes(exchangeName.c_str()),
-			amqp_cstring_bytes("fanout"), 0, 0, 0, 0 ,amqp_empty_table);
+			amqp_cstring_bytes("fanout"), 0, 0, 1, 0 ,amqp_empty_table);
     }
 
     void bindExchange(const std::string &exName, const std::string &queueName, amqp_channel_t channel) {
@@ -134,19 +145,19 @@ private:
 
     void publishMessage(const std::string &exchangeName, const std::string &message, amqp_channel_t channel)
     {
-	log(INFO, "publishing msg: " + message + ". " + exchangeName);
-	amqp_basic_publish(conn, channel, amqp_cstring_bytes(exchangeName.c_str()), amqp_empty_bytes, 
-			0, 0, NULL, amqp_cstring_bytes(message.c_str()));
-        //amqp_basic_publish(conn, channel, amqp_empty_bytes, amqp_cstring_bytes(queueName.c_str()),
-                           //0, 0, NULL, amqp_cstring_bytes(message.c_str()));
+	std::string wrapper_msg = std::to_string(clusterID) +  "#" + message;
+	int res = amqp_basic_publish(conn, channel, amqp_cstring_bytes(exchangeName.c_str()), amqp_empty_bytes, 
+			0, 0, NULL, amqp_cstring_bytes(wrapper_msg.c_str()));
+    }
+
+    void declareConsumer(const std::string &queueName, amqp_channel_t channel) {
+    	amqp_basic_consume(conn, channel, amqp_cstring_bytes(queueName.c_str()),
+			amqp_empty_bytes, 0, 1, 0, amqp_empty_table);
     }
 
 
-    std::string consumeMessage(const std::string &queueName, int timeout_ms, amqp_channel_t channel)
+    std::tuple<std::string,std::string> consumeMessage(int timeout_ms)
     {
-        amqp_basic_consume(conn, channel, amqp_cstring_bytes(queueName.c_str()),
-                           amqp_empty_bytes, 0, 1, 0, amqp_empty_table);
-
         amqp_envelope_t envelope;
         amqp_maybe_release_buffers(conn);
 
@@ -155,22 +166,27 @@ private:
         timeout.tv_usec = (timeout_ms % 1000) * 1000;
 
         amqp_rpc_reply_t res = amqp_consume_message(conn, &envelope, &timeout, 0);
+	std::string actual_queue((char *)envelope.exchange.bytes, envelope.exchange.len);	
 
         if (res.reply_type != AMQP_RESPONSE_NORMAL)
         {
-            return "";
+            return std::make_tuple("Error", "");
         }
 
         std::string message(static_cast<char *>(envelope.message.body.bytes), envelope.message.body.len);
-	amqp_basic_ack(conn, channel, envelope.delivery_tag, 0);
+	
+	int senderID = std::stoi(message.substr(0, message.find('#')));
+	if (senderID == clusterID) return std::make_tuple("Error", "");
+	message = message.substr(message.find('#') + 1);
+
         amqp_destroy_envelope(&envelope);
-	log(INFO, "Message from consume function: " + message + ". Queue name: " + queueName);
-        return message;
+	log(INFO, "Message from consume function: " + message);
+        return std::make_tuple(actual_queue, message);
     }
 
 public:
-    SynchronizerRabbitMQ(const std::string &host, int p, int id) : hostname(host), port(p), users_channel(1), relations_channel(2), 
-	timeline_channel(3), synchID(id)
+    SynchronizerRabbitMQ(const std::string &host, int p, int id) : hostname(host), port(p), users_channel(1), relations_channel(1), 
+	timeline_channel(1), synchID(id)
     {
         setupRabbitMQ();
 	declareExchange("ex_users", users_channel);
@@ -182,6 +198,9 @@ public:
 	bindExchange("ex_users", "synch" + std::to_string(synchID) + "_users_queue", users_channel);
 	bindExchange("ex_relations", "synch" + std::to_string(synchID) + "_clients_relations_queue", relations_channel);
 	bindExchange("ex_timeline", "synch" + std::to_string(synchID) + "_timeline_queue", timeline_channel);
+	declareConsumer("synch" + std::to_string(synchID) + "_users_queue", users_channel);
+	declareConsumer("synch" + std::to_string(synchID) + "_clients_relations_queue", relations_channel);
+	declareConsumer("synch" + std::to_string(synchID) + "_timeline_queue", timeline_channel);
         // TODO: add or modify what kind of queues exist in your clusters based on your needs
     }
 
@@ -199,14 +218,20 @@ public:
         Json::FastWriter writer;
         std::string message = writer.write(userList);
 	log(INFO, "Publish USERS LIST. Message: " +  message);
-	//for (int i = 0; i < total_number_of_registered_synchronizers; i++) {
-	//	publishMessage("synch" + otherHosts[i] + "_users_queue", message);
-	//}
         publishMessage("ex_users", message, users_channel);
-	//publishMessage("synch" + std::to_string(synchID) + "_users_queue", message);
     }
 
-    void consumeUserLists()
+    void consumeForAll() {
+	    std::tuple<std::string, std::string> tup = consumeMessage(1000);
+	    std::string ex = std::get<0>(tup);
+	    std::string message = std::get<1>(tup);
+	    if (ex == "ex_users") consumeUserLists(message);
+	    else if (ex == "ex_relations") consumeClientRelations(message);
+	    else if (ex == "ex_timeline") consumeTimelines(message);
+	    else log(INFO, "No message to consume!");
+    }
+
+    void consumeUserLists(std::string message)
     {
         std::vector<std::string> allUsers;
         // YOUR CODE HERE
@@ -214,9 +239,7 @@ public:
         // TODO: while the number of synchronizers is harcorded as 6 right now, you need to change this
         // to use the correct number of follower synchronizers that exist overall
         // accomplish this by making a gRPC request to the coordinator asking for the list of all follower synchronizers registered with it
-            std::string queueName = "synch" + std::to_string(synchID) + "_users_queue";
-            std::string message = consumeMessage(queueName, 1000, users_channel); // 1 second timeout
-	    log(INFO, "Consume USERS LIST from " + queueName + ". Message: " + message);
+	    log(INFO, "Consume USERS LIST. Message: " + message);
             if (!message.empty())
             {
                 Json::Value root;
@@ -262,7 +285,7 @@ public:
 	}
     }
 
-    void consumeClientRelations()
+    void consumeClientRelations(std::string message)
     {
         std::vector<std::string> allUsers = get_all_users_func(synchID);
 
@@ -270,9 +293,9 @@ public:
 
         // TODO: hardcoding 6 here, but you need to get list of all synchronizers from coordinator as before
 
-            std::string queueName = "synch" + std::to_string(synchID) + "_clients_relations_queue";
-            std::string message = consumeMessage(queueName, 1000, relations_channel); // 1 second timeout
-	    log(INFO, "Consume USER RELATIONS from " + queueName + ". Message: " + message);
+            //std::string queueName = "synch" + std::to_string(synchID) + "_clients_relations_queue";
+            //std::string message = consumeMessage(queueName, 1000, relations_channel); // 1 second timeout
+	    log(INFO, "Consume USER RELATIONS. Message: " + message);
 
             if (!message.empty())
             {
@@ -311,10 +334,8 @@ public:
     void publishTimelines()
     {
         std::vector<std::string> users = get_all_users_func(synchID);
-	log(INFO, "LOOP THROUGH USERS TO GENERATE TIMELINE MESSAGE");
         for (const auto &client : users)
         {
-	    log(INFO, "user: " + client);
             int clientId = std::stoi(client);
             int client_cluster = ((clientId - 1) % 3) + 1;
             // only do this for clients in your own cluster
@@ -325,40 +346,79 @@ public:
 
             std::vector<std::string> timeline = get_tl_or_fl(synchID, clientId, true);
             std::vector<std::string> followers = getAllFollowers(clientId);
-
+	    if (timeline.size() < 3 || followers.empty()) continue;
 	    Json::Value timeline_msg;
-	    for (const auto &post : timeline) {
-		    timeline_msg[client].append(post);
+	    int i = 0;
+	    while (i < timeline.size() - 2) {
+		    std::string line = timeline[i];
+		    if (line[0] == 'T' && timeline[i+1].substr(21) == client) {
+			    time_t t = getProtoTime(line);
+			    std::string protime = ctime(&t);
+			    time_t t_now = getTimeNow();
+			    std::string nowtime = ctime(&t_now);
+			    if (difftime(getTimeNow(), t) < 7) {
+				timeline_msg[client].append(line);
+				timeline_msg[client].append(timeline[i+1]);
+				timeline_msg[client].append(timeline[i+2]);
+			    }
+			    i+=3;
+		    } else i++;
 	    }
 	    Json::FastWriter writer;
 	    std::string message = writer.write(timeline_msg);
-	    log(INFO, "Timeline message: " + message);
-	    log(INFO, "LIST FOLLOWERS TO PUBLISH");
-            for (const auto &follower : followers)
-            {
-		log(INFO, "follower: " + follower);
-                // send the timeline updates of your current user to all its followers
-
-                // YOUR CODE HERE
-		int cluster_id = ((std::stoi(follower)-1)%3) + 1;
-		if (client_cluster == cluster_id) continue;
-		int sync_m = cluster_id;
-		int sync_s = cluster_id + 3;
-
-		publishMessage("ex_timeline", message, timeline_channel);
-            }
+	    log(INFO, "Publish TIMELINE message: " + message);
+	    if (timeline_msg.isNull() || timeline_msg.empty()) continue;
+	    publishMessage("ex_timeline", message, timeline_channel);
         }
     }
 
     // For each client in your cluster, consume messages from your timeline queue and modify your client's timeline files based on what the users they follow posted to their timeline
-    void consumeTimelines()
+    void consumeTimelines(std::string message)
     {
-        std::string queueName = "synch" + std::to_string(synchID) + "_timeline_queue";
-        std::string message = consumeMessage(queueName, 1000, timeline_channel); // 1 second timeout
+        //std::string queueName = "synch" + std::to_string(synchID) + "_timeline_queue";
+        //std::string message = consumeMessage(queueName, 1000, timeline_channel); // 1 second timeout
 	log(INFO, "Consuming timelines: " + message);
 
         if (!message.empty())
         {
+	    Json::Value root;
+	    Json::Reader reader;
+	    std::vector<std::string> allUsers = get_all_users_func(synchID);
+	    if (reader.parse(message, root)) {
+	    	for (const auto &client : allUsers) {
+			int clientId = std::stoi(client);
+            		int client_cluster = ((clientId - 1) % 3) + 1;
+			if (client_cluster != clusterID) continue;
+
+	                std::string timelineFile = "files/cluster_" + std::to_string(clusterID) 
+				+ "/" + clusterSubdirectory + "/" + client + "_timeline.txt";
+			std::string semName = "/files/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + client + "_timeline.txt";
+			sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+			std::ofstream timelineStream(timelineFile, std::ios::app | std::ios::out | std::ios::in);
+			std::vector<std::string> followings = get_tl_or_fl(synchID, clientId, false);
+			for (const auto &following : followings) {
+				if (root.isMember(following)) {
+					Json::ArrayIndex i = 0;
+					while (i < root[following].size() - 2) {
+						std::string t = root[following][i].asString();
+						std::string u = root[following][i+1].asString();
+						std::string w = root[following][i+2].asString();
+						if (!file_contains_post(timelineFile, t, u, w)) {
+							timelineStream << t << std::endl;
+							timelineStream << u << std::endl;
+							timelineStream << w << std::endl;
+							timelineStream << std::endl;
+						}
+						i+=3;
+					}
+				}
+
+			}
+			sem_close(fileSem);
+			timelineStream.close();
+
+		}
+	    }
             // consume the message from the queue and update the timeline file of the appropriate client with
             // the new updates to the timeline of the user it follows
 
@@ -394,7 +454,7 @@ class SynchServiceImpl final : public SynchService::Service
     // You do not need to modify this in any way
 };
 
-void RunServer(std::string coordIP, std::string coordPort, std::string port_no, int synchID)
+void RunServer(std::string coordIP, std::string coordPort, std::string port_no, int synchID, ServerInfo serverInfo)
 {
     // localhost = 127.0.0.1
     std::string server_address("127.0.0.1:" + port_no);
@@ -416,15 +476,17 @@ void RunServer(std::string coordIP, std::string coordPort, std::string port_no, 
     SynchronizerRabbitMQ rabbitMQ("localhost", 5672, synchID);
 
     std::thread t1(run_synchronizer, coordIP, coordPort, port_no, synchID, std::ref(rabbitMQ));
+    std::thread hb(Heartbeat, coordIP, coordPort, std::ref(serverInfo), synchID);
 
     // Create a consumer thread
     std::thread consumerThread([&rabbitMQ]()
                                {
         while (true) {
-            rabbitMQ.consumeUserLists();
-            rabbitMQ.consumeClientRelations();
-            rabbitMQ.consumeTimelines();
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            //rabbitMQ.consumeUserLists();
+            //rabbitMQ.consumeClientRelations();
+            //rabbitMQ.consumeTimelines();
+            rabbitMQ.consumeForAll();
+	    std::this_thread::sleep_for(std::chrono::seconds(5));
             // you can modify this sleep period as per your choice
         } });
     server->Wait();
@@ -472,9 +534,9 @@ int main(int argc, char **argv)
     serverInfo.set_type("synchronizer");
     serverInfo.set_serverid(synchID);
     serverInfo.set_clusterid(clusterID);
-    Heartbeat(coordIP, coordPort, serverInfo, synchID);
+    //Heartbeat(coordIP, coordPort, serverInfo, synchID);
 
-    RunServer(coordIP, coordPort, port, synchID);
+    RunServer(coordIP, coordPort, port, synchID, serverInfo);
     return 0;
 }
 
@@ -539,14 +601,16 @@ void run_synchronizer(std::string coordIP, std::string coordPort, std::string po
         // below here, you run all the update functions that synchronize the state across all the clusters
         // make any modifications as necessary to satisfy the assignments requirements
         
-	// Publish user list
-        rabbitMQ.publishUserList();
+	if (isMaster) {
+		// Publish user list
+        	rabbitMQ.publishUserList();
 
-        // Publish client relations
-        rabbitMQ.publishClientRelations();
+        	// Publish client relations
+        	rabbitMQ.publishClientRelations();
 
-        // Publish timelines
-        rabbitMQ.publishTimelines();
+        	// Publish timelines
+        	rabbitMQ.publishTimelines();
+	}
     }
     return;
 }
@@ -586,30 +650,38 @@ void Heartbeat(std::string coordinatorIp, std::string coordinatorPort, ServerInf
 {
     // For the synchronizer, a single initial heartbeat RPC acts as an initialization method which
     // servers to register the synchronizer with the coordinator and determine whether it is a master
+    bool first_fetch = true;
+    while (true) {
+    	//log(INFO, "Sending initial heartbeat to coordinator");
+    	std::string coordinatorInfo = coordinatorIp + ":" + coordinatorPort;
+   	std::unique_ptr<CoordService::Stub> stub = std::unique_ptr<CoordService::Stub>(CoordService::NewStub(grpc::CreateChannel(coordinatorInfo, grpc::InsecureChannelCredentials())));
 
-    log(INFO, "Sending initial heartbeat to coordinator");
-    std::string coordinatorInfo = coordinatorIp + ":" + coordinatorPort;
-    std::unique_ptr<CoordService::Stub> stub = std::unique_ptr<CoordService::Stub>(CoordService::NewStub(grpc::CreateChannel(coordinatorInfo, grpc::InsecureChannelCredentials())));
+    	// send a heartbeat to the coordinator, which registers your follower synchronizer as either a master or a slave
 
-    // send a heartbeat to the coordinator, which registers your follower synchronizer as either a master or a slave
-
-    // YOUR CODE HERE
-    ClientContext context;
-    Confirmation confirmation;
-    Status status = stub->Heartbeat(&context, serverInfo, &confirmation);
-    if (!status.ok() || !confirmation.status()) {
-                LOG(ERROR) << "Cannot get confirmaton from Coordinator!";
-                exit(-1);
+    	// YOUR CODE HERE
+    	ClientContext context;
+    	Confirmation confirmation;
+    	Status status = stub->Heartbeat(&context, serverInfo, &confirmation);
+    	if (!status.ok() || !confirmation.status()) {
+        	        LOG(ERROR) << "Cannot get confirmaton from Coordinator!";
+                	exit(-1);
+    	}
+    	LOG(INFO) <<"Got confirmation from Coordinator";
+    	if (confirmation.type() == "1") {
+    		isMaster = true;
+		if (first_fetch) {
+			clusterSubdirectory = "1";
+			first_fetch = false;
+		}
+    	} else {
+		isMaster = false;
+		if (first_fetch) {
+			clusterSubdirectory = "2";
+			first_fetch = false;
+		}
+    	}
+    	std::this_thread::sleep_for(std::chrono::seconds(10));
     }
-    LOG(INFO) <<"Got confirmation from Coordinator";
-    if (confirmation.type() == "1") {
-    	isMaster = true;
-	clusterSubdirectory = "1";
-    } else {
-	isMaster = false;
-	clusterSubdirectory = "2";
-    }
-    std::this_thread::sleep_for(std::chrono::seconds(10));
 }
 
 bool file_contains_user(std::string filename, std::string user)
@@ -634,12 +706,40 @@ bool file_contains_user(std::string filename, std::string user)
     return false;
 }
 
+bool file_contains_post(std::string filename, std::string t, std::string u, std::string w) {
+	std::vector<std::string> timeline;
+	std::string semName = "/" + std::to_string(clusterID) + "_" + clusterSubdirectory + "_" + filename;
+    	sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+	timeline = get_lines_from_file(filename);
+	if (timeline.size() < 3) {
+		sem_close(fileSem);
+		return false;
+	}
+	int i = 0;
+	while (i < timeline.size() - 2) {
+		std::string line = timeline[i];
+                if (line[0] == 'T') {
+		    if (t == line && u == timeline[i+1] && w == timeline[i+2]) {
+		    	sem_close(fileSem);
+			return true;
+		    }
+		    i+=3;
+                } else i++;
+
+	}
+	sem_close(fileSem);
+	return false;
+
+}
+
 std::vector<std::string> get_all_users_func_pub(int synchID) {
-	std::string clusterID = std::to_string(((synchID - 1) % 3) + 1);
+    std::string clusterID = std::to_string(((synchID - 1) % 3) + 1);
     std::string master_users_file = "files/cluster_" + clusterID + "/1/all_users.txt";
     std::string slave_users_file = "files/cluster_" + clusterID + "/2/all_users.txt";
     const char* file_name = master_users_file.c_str();
+    const char* file_slave = slave_users_file.c_str();
     struct stat fileStat;
+    struct stat slaveStat;
                         if (stat(file_name, &fileStat) == 0) {
                                 time_t m_time = fileStat.st_mtime;
                                 if (difftime(getTimeNow(), m_time) < 10) {
@@ -648,6 +748,13 @@ std::vector<std::string> get_all_users_func_pub(int synchID) {
                                 }
 
                         }
+			if (stat(file_slave, &slaveStat) == 0) {
+				time_t t = slaveStat.st_mtime;
+				if (difftime(getTimeNow(), t) < 10) {
+					log(INFO, "Users list changed");
+					return get_all_users_func(synchID);
+				}
+			}
 	return std::vector<std::string>();
 }
 
@@ -682,8 +789,8 @@ std::vector<std::string> get_tl_or_fl(int synchID, int clientID, bool tl)
     }
     else
     {
-        master_fn.append("_followers.txt");
-        slave_fn.append("_followers.txt");
+        master_fn.append("_following.txt");
+        slave_fn.append("_following.txt");
     }
 
     std::vector<std::string> m = get_lines_from_file(master_fn);

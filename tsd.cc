@@ -87,6 +87,7 @@ struct Client {
   bool operator==(const Client& c1) const{
     return (username == c1.username);
   }
+  std::streampos last_timeline_pos = 0;
 };
 
 //Vector that stores every client that has been created
@@ -95,7 +96,7 @@ std::string base_directory;
 ServerInfo serverinfo;
 std::unique_ptr<SNSService::Stub> slave_stub_;
 std::unique_ptr<CoordService::Stub> stub_;
-
+bool isMaster = false;
 //search if an user is already registered in client_db
 int lookup_user(std::string username) {
 	for (int i = 0; i < client_db.size(); i++) {
@@ -124,15 +125,15 @@ class SNSServiceImpl final : public SNSService::Service {
   Status List(ServerContext* context, const Request* request, ListReply* list_reply) override {
 
     std::string username = request->username();
-    LOG(INFO) <<"User: " << username << " -> RPC: List";
+    log(INFO, "User: " + username + " -> RPC: List");
 
     Client* user = client_db[lookup_user(username)];
-    LOG(INFO)<<"Followers: " <<user->client_followers.size();
+    log(INFO, "Followers: " + std::to_string(user->client_followers.size()));
     for (Client* c : user->client_followers) {
 	    list_reply->add_followers(c->username);
     }
 
-    LOG(INFO)<<"Users: " <<client_db.size();
+    log(INFO, "Users: " + std::to_string(client_db.size()));
     for (Client* c : client_db) {
 	    list_reply->add_all_users(c->username);
     }
@@ -142,7 +143,7 @@ class SNSServiceImpl final : public SNSService::Service {
 
   Status Follow(ServerContext* context, const Request* request, Reply* reply) override {
     
-    if (serverinfo.type() == "1") {
+    if (isMaster) {
 	    getSlave();
 	    if (slave_stub_ != nullptr) {
 		ClientContext slaveContext;
@@ -156,17 +157,17 @@ class SNSServiceImpl final : public SNSService::Service {
 
     std::string current_username = request->username();
     std::string follow_username = request->arguments(0);
-    LOG(INFO) <<"User: "<< current_username <<" -> RPC: Follow | argument: " <<follow_username;
+    log(INFO, "User: " + current_username + " -> RPC: Follow | argument: " + follow_username);
 
     if (current_username == follow_username) {
-	    LOG(INFO) <<"Invalid username: User cannot follow themselves.";
+	    log(INFO, "Invalid username: User cannot follow themselves.");
 	    reply->set_msg("Invalid username: You cannot follow yourself!");
 	    return Status::OK;
     }
 
     int follow_user_index = lookup_user(follow_username);
     if (follow_user_index < 0) {
-	    LOG(INFO) <<"Invalid username: user not found.";
+	    log(INFO,"Invalid username: user not found.");
 	    reply->set_msg("Invalid username: User not found.");
 	    return Status::OK;
     }
@@ -176,7 +177,7 @@ class SNSServiceImpl final : public SNSService::Service {
 
     auto find = std::find(current_user->client_following.begin(), current_user->client_following.end(), follow_user);
     if (find != current_user->client_following.end()) {
-	    LOG(INFO) <<"User already followed";
+	    log(INFO,"User already followed");
 	    reply->set_msg("You already followed this user!");
 	    return Status::OK;
     } else {
@@ -206,7 +207,7 @@ class SNSServiceImpl final : public SNSService::Service {
 		    }
 	    }
 
-	    LOG(INFO) <<"Follow successfully";
+	    log(INFO, "Follow successfully");
 	    reply->set_msg("Follow successfully!");
 	    return Status::OK;
     }
@@ -217,17 +218,17 @@ class SNSServiceImpl final : public SNSService::Service {
 
     std::string username1 = request->username();
     std::string username2 = request->arguments(0);
-    LOG(INFO) <<"User: " << username1 << " -> RPC: UnFollow | argument: " << username2;
+    log(INFO, "User: " + username1 + " -> RPC: UnFollow | argument: " + username2);
 
     if (username1 == username2) {
-	    LOG(INFO) <<"Invalid username: User cannot unfollow themselves.";
+	    log(INFO, "Invalid username: User cannot unfollow themselves.");
 	    reply->set_msg("Invalid username: You cannot unfollow yourself!");
 	    return Status::OK;
     }
 
     int user2_index = lookup_user(username2);
     if (user2_index < 0) {
-	    LOG(INFO) << "Invalid username: User not found.";
+	    log(INFO,"Invalid username: User not found.");
 	    reply->set_msg("Invalid username: User not found.");
 	    return Status::OK;
     }
@@ -243,11 +244,11 @@ class SNSServiceImpl final : public SNSService::Service {
 	    user2->client_followers.erase(
 			    std::remove(user2->client_followers.begin(), user2->client_followers.end(), user1),
 			    user2->client_followers.end());
-	    LOG(INFO) << "UnFollow successfully!";
+	    log(INFO,"UnFollow successfully!");
 	    reply->set_msg("UnFollow sucessfully!");
 	    return Status::OK;
     } else {
-	    LOG(INFO) << "User not a follower.";
+	    log(INFO, "User not a follower.");
 	    reply->set_msg("You are not a follower");
 	    return Status::OK;
     }
@@ -257,7 +258,7 @@ class SNSServiceImpl final : public SNSService::Service {
   // RPC Login
   Status Login(ServerContext* context, const Request* request, Reply* reply) override {
 
-    if (serverinfo.type() == "1") {
+    if (isMaster) {
 	    getSlave();
 	    if (slave_stub_ != nullptr) {
 		ClientContext slaveContext;
@@ -269,24 +270,25 @@ class SNSServiceImpl final : public SNSService::Service {
     }
   
     std::string username = request->username();
-    LOG(INFO) <<"User: " <<username <<" -> RPC: Login";
+    log(INFO, "User: "  + username + " -> RPC: Login");
     
     int user_index = lookup_user(username);
     if (user_index >= 0) {
 	    Client* user = client_db[user_index];
 	    if (user->connected) {
-		    LOG(INFO)<<"User is already logged in";
+		    log(INFO, "User is already logged in");
 		    reply->set_msg("You are already logged in.");
 	    } else {
-		    LOG(INFO)<< "User login successfully";
-		    user->connected = true;
+		    log(INFO, "User login successfully");
+		    if (isMaster) user->connected = true;
 		    reply->set_msg("Login successfully!");
 	    }
     } else {
-	    LOG(INFO)<<"Username not found";
+	    log(INFO, "Username not found");
 
 	    Client* new_user = new Client();
 	    new_user->username = username;
+	    if (!isMaster) new_user->connected = false;
 	    client_db.push_back(new_user);
 
 	    std::string file_directory = base_directory + "/" + serverinfo.type();
@@ -294,19 +296,47 @@ class SNSServiceImpl final : public SNSService::Service {
 		    std::filesystem::create_directories(file_directory);
 	    }
 	    std::string all_users_filename = file_directory + "/" + "all_users.txt";
+	    std::string semName = "/" + base_directory + "/" + serverinfo.type() + "_" + all_users_filename;
+	    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
 	    std::ofstream all_users_file(all_users_filename, std::ios::app | std::ios::out);
 	    if (all_users_file.is_open()) {
 		    std::string user_entry = username + "\n";
 		    all_users_file << user_entry;
 		    all_users_file.close();
+		    sem_close(fileSem);
 	    }
 
-	    LOG(INFO)<<"Added new user! DB size: " << client_db.size();
+	    log(INFO, "Added new user! DB size: " + std::to_string(client_db.size()));
 
 	    reply->set_msg("Welcome to Tiny SNS, " + username + "!");
     }
 
     return Status::OK;
+  }
+
+  Status SlaveAddPost(ServerContext* context, const Request* request, Reply* reply) {
+  	std::string file_directory = base_directory + "/" + serverinfo.type();
+        if (!std::filesystem::exists(file_directory)) {
+            std::filesystem::create_directories(file_directory);
+        }
+	std::string username = request->username();
+	std::string timeline_entry = request->arguments(0);
+	std::string user_timeline_filename = file_directory + "/" + username + "_timeline.txt";
+        std::string semName = "/" + base_directory + "/" + serverinfo.type() + "_" + user_timeline_filename;
+        sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+        std::ofstream user_timeline_file(user_timeline_filename, std::ios::app | std::ios::out);
+        //Append new post to slave's local file
+        if (!user_timeline_file.is_open()) {
+             log(ERROR, "Failed to open file: " + user_timeline_filename);
+             reply->set_msg("Failed to add post at Slave");		    
+        } else {
+             user_timeline_file << timeline_entry;
+             user_timeline_file.close();
+             sem_close(fileSem);
+        }
+	reply->set_msg("Add post at Slave successfully!");
+	return Status::OK;
+
   }
 
   Status Timeline(ServerContext* context, 
@@ -331,16 +361,15 @@ class SNSServiceImpl final : public SNSService::Service {
 	    timestamp.pop_back(); // remove Z
 
 	    //lookup user who sends the message
-	    LOG(INFO)<<"Username: " << username << " |Message: " << message_content;
+	    log(INFO, "Username: " + username + " |Message: " + message_content);
 	    user = client_db[lookup_user(username)];
 	    if (!user->stream) user->stream = stream;
-
-	    std::string user_timeline_filename = file_directory + "/" + username + "_timeline.txt";
-	    std::ofstream user_timeline_file(user_timeline_filename, std::ios::app | std::ios::out);
 
 	    if (message_content == "Request Timeline") {
 		    //Return last 20 messages
 		    std::string filename = file_directory + "/" + username + "_timeline.txt";
+		    std::string semName = "/" + base_directory + "/" + serverinfo.type() + "_" + filename;
+		    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
 		    std::ifstream timeline(filename);
 		    std::string line;
 		    std::vector<Message> messages;
@@ -382,12 +411,16 @@ class SNSServiceImpl final : public SNSService::Service {
 				    stream->Write(messages[i]);
 			    }
 		    } else {
-			    LOG(ERROR)<<"Failed to open file: " <<filename;
+			    log(ERROR, "Failed to open file: " + filename);
 		    }
 
 		    timeline.close();
-
+		    sem_close(fileSem);
 	    } else {
+		    std::string user_timeline_filename = file_directory + "/" + username + "_timeline.txt";
+		    std::string semName = "/" + base_directory + "/" + serverinfo.type() + "_" + user_timeline_filename;
+		    sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+	    	    std::ofstream user_timeline_file(user_timeline_filename, std::ios::app | std::ios::out);
 
                     std::string timeline_entry = "T " + timestamp + "\n"
 			    			+ "U http://twitter.com/" + username + "\n"
@@ -395,12 +428,26 @@ class SNSServiceImpl final : public SNSService::Service {
  
 		    //Append new post to user's local file
 		    if (!user_timeline_file.is_open()) {
-			    LOG(ERROR) << "Failed to open file: " << user_timeline_filename;
+			    log(ERROR, "Failed to open file: " + user_timeline_filename);
 		    } else {
 			    user_timeline_file << timeline_entry;
+			    user->last_timeline_pos = user_timeline_file.tellp();
 			    user_timeline_file.close();
+			    sem_close(fileSem);
 		    }
 
+		    //Inform Slave
+		    if (isMaster) {
+		    	getSlave();
+			if (slave_stub_ != nullptr) {
+				ClientContext slaveContext;
+				Request slaveRequest;
+				Reply slaveReply;
+				slaveRequest.set_username(user->username);
+				slaveRequest.add_arguments(timeline_entry);
+				Status status = slave_stub_->SlaveAddPost(&slaveContext, slaveRequest, &slaveReply);
+			}
+		    }
 		    
 		    //Process user's followers
 		    for (Client* c : user->client_followers) {
@@ -413,7 +460,7 @@ class SNSServiceImpl final : public SNSService::Service {
 			    std::string timeline_filename = file_directory + "/" + c->username + "_timeline.txt";
 			    std::ofstream timeline_file(timeline_filename, std::ios::app | std::ios::out);
 			    if (!timeline_file.is_open()) {
-				    LOG(ERROR) << "Failed to open file: " << timeline_filename;
+				    log(ERROR, "Failed to open file: " + timeline_filename);
 			    } else {
 				    timeline_file << timeline_entry;
 				    timeline_file.close();
@@ -456,6 +503,7 @@ class ServerProvider {
      std::thread hb_thread;
      std::thread sync_users_thread;
      std::thread sync_relations_thread;
+     std::thread sync_timeline_thread;
 
      int setUpWithCoordinator();
      void RunServer();
@@ -463,6 +511,7 @@ class ServerProvider {
      void updateUserList();
      void updateClientsRelations();
      void updateTimeline();
+     void update_timeline_of_user(std::string filename, Client* c);
      void update_followers_of_user(std::string file_path, std::vector<Client*>& list);
 };
 
@@ -481,6 +530,7 @@ int ServerProvider::setUpWithCoordinator() {
      hb_thread = std::thread(&ServerProvider::sendHeartBeat, this);
      sync_users_thread = std::thread(&ServerProvider::updateUserList, this);
      sync_relations_thread = std::thread(&ServerProvider::updateClientsRelations, this);
+     sync_timeline_thread = std::thread(&ServerProvider::updateTimeline, this);
 
      //Set up files folder
      base_directory = "files/cluster_" + std::to_string(serverinfo.clusterid());
@@ -497,17 +547,19 @@ void ServerProvider::sendHeartBeat() {
      	Confirmation confirmation;
      	Status status = stub_->Heartbeat(&context, serverinfo, &confirmation);
      	if (!status.ok() || !confirmation.status()) {
-		LOG(ERROR) << "Cannot get confirmaton from Coordinator!";
+		log(ERROR, "Cannot get confirmaton from Coordinator!");
 		exit(-1);
      	}
-     	LOG(INFO) <<"Got confirmation from Coordinator";
+     	log(INFO, "Got confirmation from Coordinator");
 	if (serverinfo.type() == "new") {
 		serverinfo.set_type(confirmation.type());
-	}
-	if (serverinfo.type() == "2" && confirmation.type() == "1") {
+		if (confirmation.type() == "1") isMaster = true;
+		else isMaster = false;
+	} else if (serverinfo.type() == "2" && confirmation.type() == "1") {
 		//TODO transfer Master rights to Slave
 		log(INFO, "Change type to Master");
-		serverinfo.set_type(confirmation.type());
+		//serverinfo.set_type(confirmation.type());
+		isMaster = true;
 	}
 	std::this_thread::sleep_for(std::chrono::seconds(10));
      }	     
@@ -526,7 +578,7 @@ void ServerProvider::updateUserList() {
 				log(INFO, "User list changed!");
 				std::vector<std::string> user_list = get_lines_from_file(file_path);
 				for (std::string user : user_list) {
-					log(INFO, "User list from file: " + user);
+					//log(INFO, "User list from file: " + user);
 					if (lookup_user(user) == -1) {
 					   Client* new_user = new Client();
             			           new_user->username = user;
@@ -538,19 +590,15 @@ void ServerProvider::updateUserList() {
 					for (Client* user : client_db) {
 					      std::string followers_path = base_directory + "/" + serverinfo.type() + "/" + user->username + "_followers.txt";
 					      std::string following_path = base_directory + "/" + serverinfo.type() + "/" + user->username + "_following.txt";
-					      log(INFO, "followers before update " + std::to_string(user->client_followers.size()));
-					      log(INFO, "following before update " + std::to_string(user->client_following.size()));
 					      update_followers_of_user(followers_path, user->client_followers);
 					      update_followers_of_user(following_path, user->client_following);
-					      log(INFO, "followers after update "  + std::to_string(user->client_followers.size()));
-					      log(INFO, "following after update " + std::to_string(user->client_following.size()));
 					}
 
 				}
 				first_fetch = false;
 			}
 		} else {
-			log(ERROR, "Error getting file information. File path: " + file_path);
+			log(ERROR, "File not available now. File path: " + file_path);
 		}
 	}
 }
@@ -574,7 +622,7 @@ void ServerProvider::updateClientsRelations() {
 				}
 				
     			} else {
-				log(ERROR, "Error getting file information. File path: " + file_path);
+				log(ERROR, "File not available now. File path: " + file_path);
 			}
 
 		}	
@@ -588,22 +636,59 @@ void ServerProvider::updateTimeline() {
 		for (Client* c : client_db) {
 			int c_cluster = (std::stoi(c->username) - 1)%3 + 1;
 			if (c_cluster != serverinfo.clusterid()) continue;
+			if (!c->stream) continue;
 			std::string file_path = path + c->username + "_timeline.txt";
 			const char* file_name = file_path.c_str();
 			struct stat fileStat;
 			if (stat(file_name, &fileStat) == 0) {
 				time_t m_time = fileStat.st_mtime;
-				if (difftime(getTimeNow(), m_time) < 5) {
+			    time_t t_now = getTimeNow();
+                            std::string nowtime = ctime(&t_now);
+			    std::string protime = ctime(&m_time);
+				if (difftime(getTimeNow(), m_time) < 7) {
 					log(INFO, "Timeline updated for user " + c->username);
-					update_timeline_of_user(file_path, c->	
+					update_timeline_of_user(file_path, c);	
 				}
 			}
 		}
 	}
 }
 
-void ServerProvider::update_timeline_of_user(std::string file_path, Client* c) {
-	
+void ServerProvider::update_timeline_of_user(std::string filename, Client* c) {
+	std::string semName = "/" + base_directory + "/" + serverinfo.type() + "_" + filename;
+	sem_t *fileSem = sem_open(semName.c_str(), O_CREAT);
+	std::ifstream timeline(filename);
+	std::string line;
+	Message msg;
+	std::string msg_t;
+	std::string msg_u;
+	std::string msg_w;
+	int sed_cluster = (std::stoi(c->username) - 1)%3 + 1;
+	if (timeline.is_open()) {
+		timeline.seekg(c->last_timeline_pos);
+		while (std::getline(timeline, line)) {
+			if (line[0] == 'T') msg_t = line.substr(2);
+			else if (line[0] == 'U') msg_u = line.substr(21);
+			else if (line[0] == 'W') msg_w = line.substr(2);
+			else {
+				msg.set_username(msg_u);
+				msg.set_msg(msg_w);
+				std::replace(msg_t.begin(), msg_t.end(), ' ', 'T');
+				msg_t += "Z";
+				google::protobuf::Timestamp msg_timestamp;
+				google::protobuf::util::TimeUtil::FromString(msg_t, &msg_timestamp);
+				msg.mutable_timestamp()->CopyFrom(msg_timestamp);
+				int rev_cluster = ((std::stoi(msg_u)-1)%3) + 1;
+				if (c->connected && c->stream && rev_cluster != sed_cluster) c->stream->Write(msg);
+				msg_t.clear(); 
+				msg_u.clear();
+				msg_w.clear();
+				c->last_timeline_pos = timeline.tellg();
+			}
+		}
+	}
+	timeline.close();
+	sem_close(fileSem);
 }
 
 void ServerProvider::update_followers_of_user(std::string file_path, std::vector<Client*>& list) {
@@ -677,6 +762,7 @@ int main(int argc, char** argv) {
 
 std::vector<std::string> get_lines_from_file(std::string filename)
 {
+    log(INFO, "test error");
     std::vector<std::string> users;
     std::string user;
     std::ifstream file;
